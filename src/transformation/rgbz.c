@@ -8,10 +8,14 @@
 #include <limits.h>
 #include <math.h>
 
-#ifdef _M_X64
+#if defined(__amd64__) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)
+#define K4A_USING_SSE
 #include <emmintrin.h> // SSE2
 #include <tmmintrin.h> // SSE3
 #include <smmintrin.h> // SSE4.1
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define K4A_USING_NEON
+#include <arm_neon.h>
 #endif
 
 typedef struct _k4a_transformation_input_image_t
@@ -34,7 +38,13 @@ typedef struct _k4a_transformation_rgbz_context_t
     const k4a_transformation_xy_tables_t *xy_tables;
     k4a_transformation_input_image_t depth_image;
     k4a_transformation_input_image_t color_image;
+    k4a_transformation_input_image_t custom_image;
     k4a_transformation_output_image_t transformed_image;
+    k4a_transformation_output_image_t transformed_custom_image;
+    k4a_transformation_interpolation_type_t interpolation_type;
+    uint16_t invalid_value;
+    bool enable_custom8;
+    bool enable_custom16;
 } k4a_transformation_rgbz_context_t;
 
 typedef struct _k4a_correspondence_t
@@ -50,12 +60,36 @@ typedef struct _k4a_bounding_box_t
     int bottom_right[2];
 } k4a_bounding_box_t;
 
-static k4a_transformation_image_descriptor_t transformation_init_image_descriptor(int width, int height, int stride)
+// g_transformation_instruction_type is set to SSE, NEON, None, or NULL
+static char g_transformation_instruction_type[5] = { 0 };
+
+// Share g_transformation_instruction_type with tests to confirm this is built correctly.
+char *transformation_get_instruction_type(void);
+char *transformation_get_instruction_type(void)
+{
+    return g_transformation_instruction_type;
+}
+
+// Set the special instruction
+static void set_special_instruction_optimization(char *opt)
+{
+    // Only set this once
+    if (g_transformation_instruction_type[0] == '\0')
+    {
+        size_t sz = MIN(sizeof(opt), sizeof(g_transformation_instruction_type) - 1);
+        memcpy(g_transformation_instruction_type, opt, sz);
+        LOG_INFO("Compiled special instruction type is: %s\n", opt);
+    }
+}
+
+static k4a_transformation_image_descriptor_t
+transformation_init_image_descriptor(int width, int height, int stride, k4a_image_format_t format)
 {
     k4a_transformation_image_descriptor_t descriptor;
     descriptor.width_pixels = width;
     descriptor.height_pixels = height;
     descriptor.stride_bytes = stride;
+    descriptor.format = format;
     return descriptor;
 }
 
@@ -64,16 +98,19 @@ static bool transformation_compare_image_descriptors(const k4a_transformation_im
 {
     if (descriptor1->width_pixels != descriptor2->width_pixels ||
         descriptor1->height_pixels != descriptor2->height_pixels ||
-        descriptor1->stride_bytes != descriptor2->stride_bytes)
+        descriptor1->stride_bytes != descriptor2->stride_bytes || descriptor1->format != descriptor2->format)
     {
-        LOG_ERROR("Unexpected image descriptor. Expected width_pixels: %d, height_pixels: %d, stride_bytes: %d. "
-                  "Actual width_pixels: %d, height_pixels: %d, stride_bytes: %d.",
+        LOG_ERROR("Unexpected image descriptor. "
+                  "Descriptor 1: width_pixels: %d, height_pixels: %d, stride_bytes: %d, format: %d. "
+                  "Descriptor 2: width_pixels: %d, height_pixels: %d, stride_bytes: %d, format: %d. ",
                   descriptor1->width_pixels,
                   descriptor1->height_pixels,
                   descriptor1->stride_bytes,
+                  descriptor1->format,
                   descriptor2->width_pixels,
                   descriptor2->height_pixels,
-                  descriptor2->stride_bytes);
+                  descriptor2->stride_bytes,
+                  descriptor2->format);
         return false;
     }
     return true;
@@ -203,6 +240,21 @@ static inline k4a_correspondence_t transformation_interpolate_correspondences(co
     return result;
 }
 
+static inline uint16_t transformation_interpolate_custom(const uint16_t *c1,
+                                                         const uint16_t *c2,
+                                                         const uint16_t *nearest,
+                                                         bool use_linear_interpolation)
+{
+    uint16_t result = *nearest;
+
+    if (use_linear_interpolation)
+    {
+        result = (*c1 + *c2) / 2;
+    }
+
+    return result;
+}
+
 static bool transformation_check_valid_correspondences(const k4a_correspondence_t *top_left,
                                                        const k4a_correspondence_t *top_right,
                                                        const k4a_correspondence_t *bottom_right,
@@ -210,7 +262,12 @@ static bool transformation_check_valid_correspondences(const k4a_correspondence_
                                                        k4a_correspondence_t *valid_top_left,
                                                        k4a_correspondence_t *valid_top_right,
                                                        k4a_correspondence_t *valid_bottom_right,
-                                                       k4a_correspondence_t *valid_bottom_left)
+                                                       k4a_correspondence_t *valid_bottom_left,
+                                                       uint16_t *custom_top_left,
+                                                       uint16_t *custom_top_right,
+                                                       uint16_t *custom_bottom_right,
+                                                       uint16_t *custom_bottom_left,
+                                                       bool use_linear_interpolation)
 {
     *valid_top_left = *top_left;
     *valid_top_right = *top_right;
@@ -225,23 +282,41 @@ static bool transformation_check_valid_correspondences(const k4a_correspondence_
     {
         num_invalid++;
         *valid_top_left = transformation_interpolate_correspondences(top_right, bottom_left);
+        *custom_top_left = transformation_interpolate_custom(custom_top_right,
+                                                             custom_bottom_left,
+                                                             custom_bottom_right,
+                                                             use_linear_interpolation);
     }
     if (top_right->valid == 0)
     {
         num_invalid++;
         *valid_top_right = *bottom_right;
         *valid_bottom_right = transformation_interpolate_correspondences(bottom_right, bottom_left);
+        *custom_top_right = *custom_bottom_right;
+        *custom_bottom_right = transformation_interpolate_custom(custom_bottom_right,
+                                                                 custom_bottom_left,
+                                                                 custom_bottom_left,
+                                                                 use_linear_interpolation);
     }
     if (bottom_right->valid == 0)
     {
         num_invalid++;
         *valid_bottom_right = transformation_interpolate_correspondences(top_right, bottom_left);
+        *custom_bottom_right = transformation_interpolate_custom(custom_top_right,
+                                                                 custom_bottom_left,
+                                                                 custom_top_left,
+                                                                 use_linear_interpolation);
     }
     if (bottom_left->valid == 0)
     {
         num_invalid++;
         *valid_bottom_left = *bottom_right;
         *valid_bottom_right = transformation_interpolate_correspondences(top_right, bottom_right);
+        *custom_bottom_left = *custom_bottom_right;
+        *custom_bottom_right = transformation_interpolate_custom(custom_top_right,
+                                                                 custom_bottom_right,
+                                                                 custom_top_right,
+                                                                 use_linear_interpolation);
     }
 
     // If two or more vertices are invalid then we can't create a valid triangle
@@ -283,10 +358,15 @@ static inline float transformation_area_function(const k4a_float2_t *a, const k4
 static bool transformation_point_inside_triangle(const k4a_correspondence_t *valid_top_left,
                                                  const k4a_correspondence_t *valid_intermediate,
                                                  const k4a_correspondence_t *valid_bottom_right,
+                                                 uint16_t custom_top_left,
+                                                 uint16_t custom_intermediate,
+                                                 uint16_t custom_bottom_right,
                                                  const k4a_float2_t *point,
                                                  float area_intermediate,
                                                  bool counter_clockwise,
-                                                 float *depth)
+                                                 float *depth,
+                                                 float *custom,
+                                                 bool use_linear_interpolation)
 {
     // Calculate sub triangle areas
     float area_top_left = transformation_area_function(&valid_intermediate->point2d, &valid_top_left->point2d, point);
@@ -294,11 +374,17 @@ static bool transformation_point_inside_triangle(const k4a_correspondence_t *val
                                                            &valid_intermediate->point2d,
                                                            point);
 
-    // Check if point is inside the triangle (area is positive).
     // If counter_clockwise order is not set then we need to negate the areas.
+    if (counter_clockwise == false)
+    {
+        area_top_left = -area_top_left;
+        area_bottom_right = -area_bottom_right;
+        area_intermediate = -area_intermediate;
+    }
+
+    // Check if point is inside the triangle (area is positive).
     // Top/left edge is inclusive (>= 0) while bottom/right edge is exclusive (> 0).
-    if (((counter_clockwise ? area_top_left : -area_top_left) >= 0.0f) &&
-        ((counter_clockwise ? area_bottom_right : -area_bottom_right) > 0.0f))
+    if ((area_top_left >= 0.0f) && (area_bottom_right > 0.0f))
     {
         // Calculate sum of areas and check divide by zero
         float sum_weights = area_top_left + area_intermediate + area_bottom_right;
@@ -312,6 +398,25 @@ static bool transformation_point_inside_triangle(const k4a_correspondence_t *val
                   area_bottom_right * valid_top_left->depth) *
                  sum_weights;
 
+        if (use_linear_interpolation)
+        {
+            *custom = (area_top_left * (float)custom_bottom_right + area_intermediate * (float)custom_intermediate +
+                       area_bottom_right * (float)custom_top_left) *
+                      sum_weights;
+        }
+        else
+        {
+            // Select custom based on highest weight (nearest neighbor)
+            if (area_top_left > area_intermediate)
+            {
+                *custom = area_top_left > area_bottom_right ? (float)custom_bottom_right : (float)custom_top_left;
+            }
+            else
+            {
+                *custom = area_intermediate > area_bottom_right ? (float)custom_intermediate : (float)custom_top_left;
+            }
+        }
+
         return true;
     }
 
@@ -322,8 +427,14 @@ static bool transformation_point_inside_quad(const k4a_correspondence_t *valid_t
                                              const k4a_correspondence_t *valid_top_right,
                                              const k4a_correspondence_t *valid_bottom_right,
                                              const k4a_correspondence_t *valid_bottom_left,
+                                             uint16_t custom_top_left,
+                                             uint16_t custom_top_right,
+                                             uint16_t custom_bottom_right,
+                                             uint16_t custom_bottom_left,
                                              const k4a_float2_t *point,
-                                             float *depth)
+                                             float *depth,
+                                             float *custom,
+                                             bool use_linear_interpolation)
 {
     // Calculate area to see if point is to the left or right of vector (valid_top_left - valid_bottom_right).
     // Set counter_clockwise flag true for all positions to the right of the aforementioned vector.
@@ -336,10 +447,15 @@ static bool transformation_point_inside_quad(const k4a_correspondence_t *valid_t
     return transformation_point_inside_triangle(valid_top_left,
                                                 counter_clockwise ? valid_bottom_left : valid_top_right,
                                                 valid_bottom_right,
+                                                custom_top_left,
+                                                counter_clockwise ? custom_bottom_left : custom_top_right,
+                                                custom_bottom_right,
                                                 point,
                                                 area_intermediate,
                                                 counter_clockwise,
-                                                depth);
+                                                depth,
+                                                custom,
+                                                use_linear_interpolation);
 }
 
 static void transformation_draw_rectangle(const k4a_bounding_box_t *bounding_box,
@@ -347,12 +463,32 @@ static void transformation_draw_rectangle(const k4a_bounding_box_t *bounding_box
                                           const k4a_correspondence_t *valid_top_right,
                                           const k4a_correspondence_t *valid_bottom_right,
                                           const k4a_correspondence_t *valid_bottom_left,
-                                          k4a_transformation_output_image_t *image)
+                                          uint16_t custom_top_left,
+                                          uint16_t custom_top_right,
+                                          uint16_t custom_bottom_right,
+                                          uint16_t custom_bottom_left,
+                                          bool use_linear_interpolation,
+                                          bool enable_custom8,
+                                          bool enable_custom16,
+                                          k4a_transformation_output_image_t *depth_out,
+                                          k4a_transformation_output_image_t *custom_out)
 {
     k4a_float2_t point;
     for (int y = bounding_box->top_left[1]; y < bounding_box->bottom_right[1]; y++)
     {
-        uint16_t *row = image->data_uint16 + y * image->descriptor->width_pixels;
+        uint16_t *depth_row = depth_out->data_uint16 + y * depth_out->descriptor->width_pixels;
+
+        uint8_t *custom8_row = 0;
+        uint16_t *custom16_row = 0;
+        if (enable_custom8)
+        {
+            custom8_row = custom_out->data_uint8 + y * custom_out->descriptor->width_pixels;
+        }
+        else if (enable_custom16)
+        {
+            custom16_row = custom_out->data_uint16 + y * custom_out->descriptor->width_pixels;
+        }
+
         point.xy.y = (float)y;
 
         for (int x = bounding_box->top_left[0]; x < bounding_box->bottom_right[0]; x++)
@@ -360,19 +496,35 @@ static void transformation_draw_rectangle(const k4a_bounding_box_t *bounding_box
             point.xy.x = (float)x;
 
             float interpolated_depth = 0.0f;
+            float interpolated_custom = 0.0f;
             if (transformation_point_inside_quad(valid_top_left,
                                                  valid_top_right,
                                                  valid_bottom_right,
                                                  valid_bottom_left,
+                                                 custom_top_left,
+                                                 custom_top_right,
+                                                 custom_bottom_right,
+                                                 custom_bottom_left,
                                                  &point,
-                                                 &interpolated_depth))
+                                                 &interpolated_depth,
+                                                 &interpolated_custom,
+                                                 use_linear_interpolation))
             {
                 uint16_t depth = (uint16_t)(interpolated_depth + 0.5f);
 
                 // handle occlusions
-                if (row[x] == 0 || (depth < row[x]))
+                if (depth_row[x] == 0 || (depth < depth_row[x]))
                 {
-                    row[x] = depth;
+                    depth_row[x] = depth;
+
+                    if (enable_custom8)
+                    {
+                        custom8_row[x] = (uint8_t)(interpolated_custom + 0.5f);
+                    }
+                    else if (enable_custom16)
+                    {
+                        custom16_row[x] = (uint16_t)(interpolated_custom + 0.5f);
+                    }
                 }
             }
         }
@@ -385,6 +537,27 @@ static k4a_result_t transformation_depth_to_color(k4a_transformation_rgbz_contex
            0,
            (size_t)(context->transformed_image.descriptor->stride_bytes *
                     context->transformed_image.descriptor->height_pixels));
+
+    if (context->enable_custom8)
+    {
+        int num_pixels = context->transformed_custom_image.descriptor->width_pixels *
+                         context->transformed_custom_image.descriptor->height_pixels;
+        for (int i = 0; i < num_pixels; i++)
+        {
+            context->transformed_custom_image.data_uint8[i] = (uint8_t)context->invalid_value;
+        }
+    }
+    else if (context->enable_custom16)
+    {
+        int num_pixels = context->transformed_custom_image.descriptor->width_pixels *
+                         context->transformed_custom_image.descriptor->height_pixels;
+        for (int i = 0; i < num_pixels; i++)
+        {
+            context->transformed_custom_image.data_uint16[i] = context->invalid_value;
+        }
+    }
+
+    bool use_linear_interpolation = context->interpolation_type == K4A_TRANSFORMATION_INTERPOLATION_TYPE_LINEAR;
 
     k4a_correspondence_t *vertex_row = (k4a_correspondence_t *)malloc(
         (size_t)context->depth_image.descriptor->width_pixels * sizeof(k4a_correspondence_t));
@@ -424,6 +597,28 @@ static k4a_result_t transformation_depth_to_color(k4a_transformation_rgbz_contex
                 return K4A_RESULT_FAILED;
             }
 
+            uint16_t custom_top_left = 0;
+            uint16_t custom_top_right = 0;
+            uint16_t custom_bottom_right = 0;
+            uint16_t custom_bottom_left = 0;
+
+            if (context->enable_custom8)
+            {
+                int custom_width = context->custom_image.descriptor->width_pixels;
+                custom_top_left = context->custom_image.data_uint8[(y - 1) * custom_width + x - 1];
+                custom_top_right = context->custom_image.data_uint8[(y - 1) * custom_width + x];
+                custom_bottom_right = context->custom_image.data_uint8[y * custom_width + x];
+                custom_bottom_left = context->custom_image.data_uint8[y * custom_width + x - 1];
+            }
+            else if (context->enable_custom16)
+            {
+                int custom_width = context->custom_image.descriptor->width_pixels;
+                custom_top_left = context->custom_image.data_uint16[(y - 1) * custom_width + x - 1];
+                custom_top_right = context->custom_image.data_uint16[(y - 1) * custom_width + x];
+                custom_bottom_right = context->custom_image.data_uint16[y * custom_width + x];
+                custom_bottom_left = context->custom_image.data_uint16[y * custom_width + x - 1];
+            }
+
             k4a_correspondence_t valid_top_left, valid_top_right, valid_bottom_right, valid_bottom_left;
             if (transformation_check_valid_correspondences(&top_left,
                                                            &top_right,
@@ -432,7 +627,12 @@ static k4a_result_t transformation_depth_to_color(k4a_transformation_rgbz_contex
                                                            &valid_top_left,
                                                            &valid_top_right,
                                                            &valid_bottom_right,
-                                                           &valid_bottom_left))
+                                                           &valid_bottom_left,
+                                                           &custom_top_left,
+                                                           &custom_top_right,
+                                                           &custom_bottom_right,
+                                                           &custom_bottom_left,
+                                                           use_linear_interpolation))
             {
                 k4a_bounding_box_t bounding_box =
                     transformation_compute_bounding_box(&valid_top_left,
@@ -447,7 +647,15 @@ static k4a_result_t transformation_depth_to_color(k4a_transformation_rgbz_contex
                                               &valid_top_right,
                                               &valid_bottom_right,
                                               &valid_bottom_left,
-                                              &context->transformed_image);
+                                              custom_top_left,
+                                              custom_top_right,
+                                              custom_bottom_right,
+                                              custom_bottom_left,
+                                              use_linear_interpolation,
+                                              context->enable_custom8,
+                                              context->enable_custom16,
+                                              &context->transformed_image,
+                                              &context->transformed_custom_image);
             }
 
             vertex_row[x] = bottom_right;
@@ -464,54 +672,52 @@ k4a_buffer_result_t transformation_depth_image_to_color_camera_validate_paramete
     const k4a_transformation_xy_tables_t *xy_tables_depth_camera,
     const uint8_t *depth_image_data,
     const k4a_transformation_image_descriptor_t *depth_image_descriptor,
+    const uint8_t *custom_image_data,
+    const k4a_transformation_image_descriptor_t *custom_image_descriptor,
     uint8_t *transformed_depth_image_data,
-    k4a_transformation_image_descriptor_t *transformed_depth_image_descriptor)
+    k4a_transformation_image_descriptor_t *transformed_depth_image_descriptor,
+    uint8_t *transformed_custom_image_data,
+    k4a_transformation_image_descriptor_t *transformed_custom_image_descriptor)
 {
-    if (transformed_depth_image_descriptor == 0 || calibration == 0)
+    if (depth_image_descriptor == 0 || custom_image_descriptor == 0 || transformed_depth_image_descriptor == 0 ||
+        transformed_custom_image_descriptor == 0)
     {
-        if (calibration == 0)
-        {
-            LOG_ERROR("Calibration is null.", 0);
-        }
         return K4A_BUFFER_RESULT_FAILED;
     }
 
-    k4a_transformation_image_descriptor_t expected_transformed_depth_image_descriptor =
-        transformation_init_image_descriptor(calibration->color_camera_calibration.resolution_width,
-                                             calibration->color_camera_calibration.resolution_height,
-                                             calibration->color_camera_calibration.resolution_width *
-                                                 (int)sizeof(uint16_t));
-
-    if (transformed_depth_image_data == 0 ||
-        transformation_compare_image_descriptors(transformed_depth_image_descriptor,
-                                                 &expected_transformed_depth_image_descriptor) == false)
+    if (calibration == 0)
     {
-        if (transformed_depth_image_data == 0)
-        {
-            LOG_ERROR("Transformed depth image data is null.", 0);
-        }
-        else
-        {
-            LOG_ERROR("Unexpected transformed depth image descriptor, see details above.", 0);
-        }
-        return K4A_BUFFER_RESULT_TOO_SMALL;
+        LOG_ERROR("Calibration is null.", 0);
+        return K4A_BUFFER_RESULT_FAILED;
     }
 
-    if (xy_tables_depth_camera == 0 || depth_image_data == 0 || depth_image_descriptor == 0 ||
-        transformed_depth_image_data == 0)
+    if (xy_tables_depth_camera == 0)
     {
-        if (xy_tables_depth_camera == 0)
-        {
-            LOG_ERROR("Depth camera xy table is null.", 0);
-        }
-        if (depth_image_data == 0)
-        {
-            LOG_ERROR("Depth image data is null.", 0);
-        }
-        if (transformed_depth_image_data == 0)
-        {
-            LOG_ERROR("Transformed depth image data is null.", 0);
-        }
+        LOG_ERROR("Depth camera xy table is null.", 0);
+        return K4A_BUFFER_RESULT_FAILED;
+    }
+
+    if (depth_image_data == 0)
+    {
+        LOG_ERROR("Depth image data is null.", 0);
+        return K4A_BUFFER_RESULT_FAILED;
+    }
+
+    if (transformed_depth_image_data == 0)
+    {
+        LOG_ERROR("Transformed depth image data is null.", 0);
+        return K4A_BUFFER_RESULT_FAILED;
+    }
+
+    if (transformed_custom_image_data != 0 && custom_image_data == 0)
+    {
+        LOG_ERROR("Custom image data is null.", 0);
+        return K4A_BUFFER_RESULT_FAILED;
+    }
+
+    if (custom_image_data != 0 && transformed_custom_image_data == 0)
+    {
+        LOG_ERROR("Transformed custom image data is null.", 0);
         return K4A_BUFFER_RESULT_FAILED;
     }
 
@@ -519,12 +725,64 @@ k4a_buffer_result_t transformation_depth_image_to_color_camera_validate_paramete
         transformation_init_image_descriptor(calibration->depth_camera_calibration.resolution_width,
                                              calibration->depth_camera_calibration.resolution_height,
                                              calibration->depth_camera_calibration.resolution_width *
-                                                 (int)sizeof(uint16_t));
+                                                 (int)sizeof(uint16_t),
+                                             K4A_IMAGE_FORMAT_DEPTH16);
 
     if (transformation_compare_image_descriptors(depth_image_descriptor, &expected_depth_image_descriptor) == false)
     {
         LOG_ERROR("Unexpected depth image descriptor, see details above.", 0);
         return K4A_BUFFER_RESULT_FAILED;
+    }
+
+    int custom_bytes_per_pixel = 1;
+    k4a_image_format_t custom_format = K4A_IMAGE_FORMAT_CUSTOM8;
+    if (custom_image_descriptor->format == K4A_IMAGE_FORMAT_CUSTOM16)
+    {
+        custom_bytes_per_pixel = 2;
+        custom_format = K4A_IMAGE_FORMAT_CUSTOM16;
+    }
+
+    k4a_transformation_image_descriptor_t expected_custom_image_descriptor =
+        transformation_init_image_descriptor(calibration->depth_camera_calibration.resolution_width,
+                                             calibration->depth_camera_calibration.resolution_height,
+                                             calibration->depth_camera_calibration.resolution_width *
+                                                 custom_bytes_per_pixel,
+                                             custom_format);
+
+    if (custom_image_data != 0 &&
+        transformation_compare_image_descriptors(custom_image_descriptor, &expected_custom_image_descriptor) == false)
+    {
+        LOG_ERROR("Unexpected custom image descriptor, see details above.", 0);
+        return K4A_BUFFER_RESULT_FAILED;
+    }
+
+    k4a_transformation_image_descriptor_t expected_transformed_depth_image_descriptor =
+        transformation_init_image_descriptor(calibration->color_camera_calibration.resolution_width,
+                                             calibration->color_camera_calibration.resolution_height,
+                                             calibration->color_camera_calibration.resolution_width *
+                                                 (int)sizeof(uint16_t),
+                                             K4A_IMAGE_FORMAT_DEPTH16);
+
+    if (transformation_compare_image_descriptors(transformed_depth_image_descriptor,
+                                                 &expected_transformed_depth_image_descriptor) == false)
+    {
+        LOG_ERROR("Unexpected transformed depth image descriptor, see details above.", 0);
+        return K4A_BUFFER_RESULT_TOO_SMALL;
+    }
+
+    k4a_transformation_image_descriptor_t expected_transformed_custom_image_descriptor =
+        transformation_init_image_descriptor(calibration->color_camera_calibration.resolution_width,
+                                             calibration->color_camera_calibration.resolution_height,
+                                             calibration->color_camera_calibration.resolution_width *
+                                                 custom_bytes_per_pixel,
+                                             custom_format);
+
+    if (transformed_custom_image_data != 0 &&
+        transformation_compare_image_descriptors(transformed_custom_image_descriptor,
+                                                 &expected_transformed_custom_image_descriptor) == false)
+    {
+        LOG_ERROR("Unexpected transformed custom image descriptor, see details above.", 0);
+        return K4A_BUFFER_RESULT_TOO_SMALL;
     }
 
     return K4A_BUFFER_RESULT_SUCCEEDED;
@@ -535,8 +793,14 @@ k4a_buffer_result_t transformation_depth_image_to_color_camera_internal(
     const k4a_transformation_xy_tables_t *xy_tables_depth_camera,
     const uint8_t *depth_image_data,
     const k4a_transformation_image_descriptor_t *depth_image_descriptor,
+    const uint8_t *custom_image_data,
+    const k4a_transformation_image_descriptor_t *custom_image_descriptor,
     uint8_t *transformed_depth_image_data,
-    k4a_transformation_image_descriptor_t *transformed_depth_image_descriptor)
+    k4a_transformation_image_descriptor_t *transformed_depth_image_descriptor,
+    uint8_t *transformed_custom_image_data,
+    k4a_transformation_image_descriptor_t *transformed_custom_image_descriptor,
+    k4a_transformation_interpolation_type_t interpolation_type,
+    uint32_t invalid_custom_value)
 {
     if (K4A_BUFFER_RESULT_SUCCEEDED !=
         TRACE_BUFFER_CALL(
@@ -544,8 +808,12 @@ k4a_buffer_result_t transformation_depth_image_to_color_camera_internal(
                                                                            xy_tables_depth_camera,
                                                                            depth_image_data,
                                                                            depth_image_descriptor,
+                                                                           custom_image_data,
+                                                                           custom_image_descriptor,
                                                                            transformed_depth_image_data,
-                                                                           transformed_depth_image_descriptor)))
+                                                                           transformed_depth_image_descriptor,
+                                                                           transformed_custom_image_data,
+                                                                           transformed_custom_image_descriptor)))
     {
         return K4A_BUFFER_RESULT_FAILED;
     }
@@ -558,8 +826,27 @@ k4a_buffer_result_t transformation_depth_image_to_color_camera_internal(
 
     context.depth_image = transformation_init_input_image(depth_image_descriptor, depth_image_data);
 
+    context.custom_image = transformation_init_input_image(custom_image_descriptor, custom_image_data);
+
     context.transformed_image = transformation_init_output_image(transformed_depth_image_descriptor,
                                                                  transformed_depth_image_data);
+
+    context.transformed_custom_image = transformation_init_output_image(transformed_custom_image_descriptor,
+                                                                        transformed_custom_image_data);
+
+    context.enable_custom8 = false;
+    context.enable_custom16 = false;
+    if (custom_image_descriptor->format == K4A_IMAGE_FORMAT_CUSTOM8)
+    {
+        context.enable_custom8 = true;
+    }
+    else if (custom_image_descriptor->format == K4A_IMAGE_FORMAT_CUSTOM16)
+    {
+        context.enable_custom16 = true;
+    }
+
+    context.interpolation_type = interpolation_type;
+    context.invalid_value = (uint16_t)(invalid_custom_value & 0xffff);
 
     if (K4A_FAILED(TRACE_CALL(transformation_depth_to_color(&context))))
     {
@@ -683,7 +970,8 @@ k4a_buffer_result_t transformation_color_image_to_depth_camera_validate_paramete
         transformation_init_image_descriptor(calibration->depth_camera_calibration.resolution_width,
                                              calibration->depth_camera_calibration.resolution_height,
                                              calibration->depth_camera_calibration.resolution_width * 4 *
-                                                 (int)sizeof(uint8_t));
+                                                 (int)sizeof(uint8_t),
+                                             K4A_IMAGE_FORMAT_COLOR_BGRA32);
 
     if (transformed_color_image_data == 0 ||
         transformation_compare_image_descriptors(transformed_color_image_descriptor,
@@ -726,7 +1014,8 @@ k4a_buffer_result_t transformation_color_image_to_depth_camera_validate_paramete
         transformation_init_image_descriptor(calibration->depth_camera_calibration.resolution_width,
                                              calibration->depth_camera_calibration.resolution_height,
                                              calibration->depth_camera_calibration.resolution_width *
-                                                 (int)sizeof(uint16_t));
+                                                 (int)sizeof(uint16_t),
+                                             K4A_IMAGE_FORMAT_DEPTH16);
 
     if (transformation_compare_image_descriptors(depth_image_descriptor, &expected_depth_image_descriptor) == false)
     {
@@ -738,7 +1027,8 @@ k4a_buffer_result_t transformation_color_image_to_depth_camera_validate_paramete
         transformation_init_image_descriptor(calibration->color_camera_calibration.resolution_width,
                                              calibration->color_camera_calibration.resolution_height,
                                              calibration->color_camera_calibration.resolution_width * 4 *
-                                                 (int)sizeof(uint8_t));
+                                                 (int)sizeof(uint8_t),
+                                             K4A_IMAGE_FORMAT_COLOR_BGRA32);
 
     if (transformation_compare_image_descriptors(color_image_descriptor, &expected_color_image_descriptor) == false)
     {
@@ -793,7 +1083,9 @@ k4a_buffer_result_t transformation_color_image_to_depth_camera_internal(
     return K4A_BUFFER_RESULT_SUCCEEDED;
 }
 
-#ifndef _M_X64
+#if !defined(K4A_USING_SSE) && !defined(K4A_USING_NEON)
+// This is the same function as transformation_depth_to_xyz without the SSE
+// instructions. This code is kept here for readability.
 static void transformation_depth_to_xyz(k4a_transformation_xy_tables_t *xy_tables,
                                         const void *depth_image_data,
                                         void *xyz_image_data)
@@ -801,6 +1093,8 @@ static void transformation_depth_to_xyz(k4a_transformation_xy_tables_t *xy_table
     const uint16_t *depth_image_data_uint16 = (const uint16_t *)depth_image_data;
     int16_t *xyz_data_int16 = (int16_t *)xyz_image_data;
     int16_t x, y, z;
+
+    set_special_instruction_optimization("None");
 
     for (int i = 0; i < xy_tables->width * xy_tables->height; i++)
     {
@@ -824,15 +1118,87 @@ static void transformation_depth_to_xyz(k4a_transformation_xy_tables_t *xy_table
         xyz_data_int16[3 * i + 2] = z;
     }
 }
-#else
-static void transformation_depth_to_xyz_sse(k4a_transformation_xy_tables_t *xy_tables,
-                                            const void *depth_image_data,
-                                            void *xyz_image_data)
+
+#elif defined(K4A_USING_NEON)
+// convert from float to int using NEON is round to zero
+// make separate function to do floor
+static inline int32x4_t neon_floor(float32x4_t v)
+{
+    int32x4_t v0 = vcvtq_s32_f32(v);
+    int32x4_t a0 = vreinterpretq_s32_u32(vcgtq_f32(vcvtq_f32_s32(v0), v));
+    return vaddq_s32(v0, a0);
+}
+
+static void transformation_depth_to_xyz(k4a_transformation_xy_tables_t *xy_tables,
+                                        const void *depth_image_data,
+                                        void *xyz_image_data)
+{
+    float *x_tab = (float *)xy_tables->x_table;
+    float *y_tab = (float *)xy_tables->y_table;
+    const uint16_t *depth_image_data_uint16 = (const uint16_t *)depth_image_data;
+    int16_t *xyz_data_int16 = (int16_t *)xyz_image_data;
+    float32x4_t half = vdupq_n_f32(0.5f);
+
+    set_special_instruction_optimization("NEON");
+
+    for (int i = 0; i < xy_tables->width * xy_tables->height / 8; i++)
+    {
+        // 8 elements in 1 loop
+        int offset = i * 8;
+        float32x4_t x_tab_lo = vld1q_f32(x_tab + offset);
+        float32x4_t x_tab_hi = vld1q_f32(x_tab + offset + 4);
+        // equivalent to isnan
+        uint32x4_t valid_lo = vceqq_f32(x_tab_lo, x_tab_lo);
+        uint32x4_t valid_hi = vceqq_f32(x_tab_hi, x_tab_hi);
+        // each element in valid is a mask which corresponds to isnan
+        uint16x8_t valid = vcombine_u16(vmovn_u32(valid_lo), vmovn_u32(valid_hi));
+        uint16x8_t v_0 = vandq_u16(vld1q_u16(depth_image_data_uint16 + offset), valid);
+        // v_z corresponds to z in naive code
+        int16x8_t v_z = vreinterpretq_s16_u16(v_0);
+        // expand v_z to compute x and y
+        float32x4_t v_z_lo = vcvtq_f32_u32(vmovl_u16(vget_low_u16(v_0)));
+        float32x4_t v_z_hi = vcvtq_f32_u32(vmovl_u16(vget_high_u16(v_0)));
+        // load x_table and y_table
+        float32x4_t t_x_lo = vld1q_f32(x_tab + offset);
+        float32x4_t t_x_hi = vld1q_f32(x_tab + offset + 4);
+        float32x4_t t_y_lo = vld1q_f32(y_tab + offset);
+        float32x4_t t_y_hi = vld1q_f32(y_tab + offset + 4);
+        // main computation of x and y
+        int32x4_t v_x_lo = neon_floor(vmlaq_f32(half, v_z_lo, t_x_lo));
+        int32x4_t v_x_hi = neon_floor(vmlaq_f32(half, v_z_hi, t_x_hi));
+        int32x4_t v_y_lo = neon_floor(vmlaq_f32(half, v_z_lo, t_y_lo));
+        int32x4_t v_y_hi = neon_floor(vmlaq_f32(half, v_z_hi, t_y_hi));
+        int16x8_t v_x = vcombine_s16(vmovn_s32(v_x_lo), vmovn_s32(v_x_hi));
+        int16x8_t v_y = vcombine_s16(vmovn_s32(v_y_lo), vmovn_s32(v_y_hi));
+        // use scatter store instruction
+        int16x8x3_t store;
+        store.val[0] = v_x; // x0 x1 .. x14 x15
+        store.val[1] = v_y; // y0 y1 .. y14 y15
+        store.val[2] = v_z; // z0 z1 .. z14 z15
+        // x0 y0 z0 x1 y1 z1 .. x15 y15 z15
+        vst3q_s16(xyz_data_int16 + offset * 3, store);
+    }
+}
+
+#else /* defined(K4A_USING_SSE) */
+
+static void transformation_depth_to_xyz(k4a_transformation_xy_tables_t *xy_tables,
+                                        const void *depth_image_data,
+                                        void *xyz_image_data)
 {
     const __m128i *depth_image_data_m128i = (const __m128i *)depth_image_data;
-    __m128 *x_table_m128 = (__m128 *)xy_tables->x_table;
-    __m128 *y_table_m128 = (__m128 *)xy_tables->y_table;
+#if defined(__clang__) || defined(__GNUC__)
+    void *x_table = __builtin_assume_aligned(xy_tables->x_table, 16);
+    void *y_table = __builtin_assume_aligned(xy_tables->y_table, 16);
+#else
+    void *x_table = (void *)xy_tables->x_table;
+    void *y_table = (void *)xy_tables->y_table;
+#endif
+    __m128 *x_table_m128 = (__m128 *)x_table;
+    __m128 *y_table_m128 = (__m128 *)y_table;
     __m128i *xyz_data_m128i = (__m128i *)xyz_image_data;
+
+    set_special_instruction_optimization("SSE");
 
     const int16_t pos0 = 0x0100;
     const int16_t pos1 = 0x0302;
@@ -903,10 +1269,8 @@ transformation_depth_image_to_point_cloud_internal(k4a_transformation_xy_tables_
         return K4A_BUFFER_RESULT_FAILED;
     }
 
-    k4a_transformation_image_descriptor_t expected_xyz_image_descriptor =
-        transformation_init_image_descriptor(xy_tables->width,
-                                             xy_tables->height,
-                                             xy_tables->width * 3 * (int)sizeof(int16_t));
+    k4a_transformation_image_descriptor_t expected_xyz_image_descriptor = transformation_init_image_descriptor(
+        xy_tables->width, xy_tables->height, xy_tables->width * 3 * (int)sizeof(int16_t), xyz_image_descriptor->format);
 
     if (xyz_image_data == 0 ||
         transformation_compare_image_descriptors(xyz_image_descriptor, &expected_xyz_image_descriptor) == false)
@@ -931,10 +1295,8 @@ transformation_depth_image_to_point_cloud_internal(k4a_transformation_xy_tables_
         return K4A_BUFFER_RESULT_FAILED;
     }
 
-    k4a_transformation_image_descriptor_t expected_depth_image_descriptor =
-        transformation_init_image_descriptor(xy_tables->width,
-                                             xy_tables->height,
-                                             xy_tables->width * (int)sizeof(uint16_t));
+    k4a_transformation_image_descriptor_t expected_depth_image_descriptor = transformation_init_image_descriptor(
+        xy_tables->width, xy_tables->height, xy_tables->width * (int)sizeof(uint16_t), K4A_IMAGE_FORMAT_DEPTH16);
 
     if (transformation_compare_image_descriptors(depth_image_descriptor, &expected_depth_image_descriptor) == false)
     {
@@ -942,11 +1304,7 @@ transformation_depth_image_to_point_cloud_internal(k4a_transformation_xy_tables_
         return K4A_BUFFER_RESULT_FAILED;
     }
 
-#ifdef _M_X64
-    transformation_depth_to_xyz_sse(xy_tables, (const void *)depth_image_data, (void *)xyz_image_data);
-#else
     transformation_depth_to_xyz(xy_tables, (const void *)depth_image_data, (void *)xyz_image_data);
-#endif
 
     return K4A_BUFFER_RESULT_SUCCEEDED;
 }

@@ -1,17 +1,17 @@
 # Azure Kinect SDK (K4A)
 
-Welcome to the Azure Kinect DK Sensor SDK! While devices and the Body Tracking SDK will be available this
-summer, we wanted to share the Sensor SDK now. We hope you can use this interim period to get familiar with
-our SDK, ask questions, and provide feedback. See [Azure.com/Kinect](https://Azure.com/kinect) for device
-info and available documentation. 
+Welcome to the Azure Kinect Sensor SDK! We hope you can use it to build many great applications and participate in the project. Don't be shy to ask questions, and provide feedback. See [Azure.com/Kinect](https://Azure.com/kinect) for device
+info and available documentation.
 
-[![Build Status (develop)](https://dev.azure.com/ms/Azure-Kinect-Sensor-SDK/_apis/build/status/Microsoft.Azure-Kinect-Sensor-SDK%20(Public)?branchName=develop)](https://dev.azure.com/ms/Azure-Kinect-Sensor-SDK/_build/latest?definitionId=133&branchName=develop)
+[![Build Status
+(develop)](https://dev.azure.com/ms/Azure-Kinect-Sensor-SDK/_apis/build/status/Microsoft.Azure-Kinect-Sensor-SDK%20(Public)?branchName=develop)](https://dev.azure.com/ms/Azure-Kinect-Sensor-SDK/_build/latest?definitionId=133&branchName=develop)
+[![Nuget](https://img.shields.io/nuget/vpre/Microsoft.Azure.Kinect.Sensor.svg)](https://www.nuget.org/packages/Microsoft.Azure.Kinect.Sensor/)
 
 ## Introduction
 
 **Azure Kinect SDK** is a cross platform (Linux and Windows) user mode SDK to read data from your Azure Kinect device.
 
-## Why use the Azure Kinect SDK 
+## Why use the Azure Kinect SDK
 
 The Azure Kinect SDK enables you to get the most out of your Azure Kinect camera. Features include:
 
@@ -25,17 +25,11 @@ The Azure Kinect SDK enables you to get the most out of your Azure Kinect camera
 
 ## Installation
 
-To use the SDK please refer to the installation instructions here.
+To use the SDK, please refer to the installation instructions in [usage](docs/usage.md)
 
-## Documentation and Official Builds
+## Documentation
 
-The latest stable binaries are available for download.
-   
-   Tag   | Download
----------|----------------
-  [v1.0.2](https://github.com/Microsoft/Azure-Kinect-Sensor-SDK/releases/tag/v1.0.2) | [Azure Kinect SDK 1.0.2.msi](http://download.microsoft.com/download/B/4/D/B4D26442-DDA5-40C2-9913-3B23AE84A806/Azure%20Kinect%20SDK%201.0.2.msi)
-
-Please see [usage](docs/usage.md) for info on how to use the SDK.
+API documentation is avaliable [here](https://microsoft.github.io/Azure-Kinect-Sensor-SDK/).
 
 ## Building
 
@@ -56,7 +50,22 @@ We welcome your contributions! Please see the [contribution guidelines](CONTRIBU
 
 ## Feedback
 
-For any feedback or to report a bug, please file a [GitHub Issue](https://github.com/Microsoft/Azure-Kinect-Sensor-SDK/issues).
+For SDK feedback or to report a bug, please file a [GitHub Issue](https://github.com/Microsoft/Azure-Kinect-Sensor-SDK/issues). For general suggestions or ideas, visit our [feedback forum](https://aka.ms/azurekinectfeedback).
+
+## Sample Code
+
+There are several places where the sample code can be found.
+
+- In this repository: [Azure-Kinect-Sensor-SDK\examples](https://github.com/microsoft/Azure-Kinect-Sensor-SDK/tree/develop/examples)- each example has a readme page that describes it and the steps to set it up.
+- [Azure-Kinect-Samples](https://github.com/microsoft/Azure-Kinect-Samples) repository. There are multiple examples of how to use both Sensor and Body tracking SDKs.
+
+## Q&A
+
+Welcome to the [Q&A](kinect-qa.md) corner!
+
+## Join Our Developer Program
+
+Complete your developer profile [here](https://aka.ms/iwantmr) to get connected with our Mixed Reality Developer Program. You will receive the latest on our developer tools, events, and early access offers.
 
 ## Code of Conduct
 
@@ -72,7 +81,8 @@ email to ensure we received your original message. Further information, includin
 [MSRC PGP](https://technet.microsoft.com/en-us/security/dn606155) key, can be found in the
 [Security TechCenter](https://technet.microsoft.com/en-us/security/default).
 
-## License
+## License and Microsoft Support for Azure Kinect Sensor SDK
 
 [MIT License](LICENSE)
 
+[Microsoft Support for Azure Kinect Sensor SDK](microsoft-support.md)

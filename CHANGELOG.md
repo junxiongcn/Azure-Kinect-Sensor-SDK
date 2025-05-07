@@ -1,5 +1,59 @@
 ## Change Log
 
+### v1.4.1
+
+* Added NEON for ARM64
+* Failed conversion of MJPEG to BGRA is now a warning - not an error.
+
+### v1.4.0
+
+* Added ARM64 Suport.
+* On Windows Opencv-4.1.1 is now being used and tested.
+* CPP; Adding record.hpp, updated playback.hpp
+* Fixed small error in transformation functions
+* Updated K4aRecorder allow:
+  * Setting manual exposure based on exposure time.
+  * Record BGRA32 format.
+* Added transformation API's to CSharp
+
+### v1.3.0 
+
+* On Windows VS dependencies are now dynamically linked and require redistributables for
+[VS2015](https://www.microsoft.com/en-us/download/details.aspx?id=48145) or newer.
+* Error and Warning messages have been cleaned up to be less verbose.
+* Multi camera sync and capture green screen example added.
+* Added new k4a_calibration_color_2d_to_depth_2d API  to transform pixel from color image to depth image with searching on epipolar line
+* Added a capture::handle() method to the C++ wrapper, allowing access to the underlying k4a_capture_t when using the C++ wrapper.
+
+### v1.2.0
+
+* CSharp support added.
+* Depth Engine breaking changes to 2.0, SDK now relies on this new version.
+* Firmware updates for better USB compatibility.
+* Added new API's k4a_image_get_device_timestamp_usec(), k4a_image_get_system_timestamp_usec(), 
+k4a_image_set_device_timestamp_usec(), k4a_image_set_system_timestamp_usec(), and k4a_image_set_exposure_usec(). (#350)
+* Deprecated API's k4a_image_get_timestamp_usec(), k4a_image_set_timestamp_usec(), and k4a_image_set_exposure_time_usec().
+* Added new transformation API k4a_transformation_depth_image_to_color_camera_custom(). (#566)
+* Fixed color exposure get & set API's. (#515)
+* The C++ API for playback was made public. (#493)
+* Added custom track recording and playback API. (#246)
+* All playback API functions now return timestamps in device time instead of relative to start of recording. (#592)
+* Deprecated k4a_playback_get_last_timestamp_usec() and replaced with k4a_playback_get_recording_length_usec().
+
+### v1.1.0
+
+* Clean up repo documentation for going public.
+* New API k4a_device_get_color_control_capabilities() to read color control capabilities was added. (#319)
+* C++ wrapper added.
+* Linux, Color camera support added.
+* K4A_COLOR_CONTROL_AUTO_EXPOSURE_PRIORITY deprecated. (#277)
+* New K4A_\*_TRACK tags added to recordings for track identification. (#259)
+* Playback External Sync example added. (#274)
+* Playback API format conversion support added (MJPG -> BGRA32, etc...). (#237)
+* Playback IMU API added. (#213)
+* Various playback performance improvements, including read-ahead and cluster caching. (#203, #189, #142)
+* k4a_playback_seek_timestamp() functionality changed to fix edge cases. (#141)
+
 ### v1.0.0
 
 * Breaking Change to pre-production devices, update container ID & serial number
@@ -12,9 +66,9 @@
 * Changed units of IMU Gyroscope reading from degrees per second to radians per second.
 * Breaking change to k4a_calibration_get_from_raw API, size of source calibration string is now required along with the 
 source calibration.
-* Added FW version minumum bar check
+* Added FW version minimum bar check
 * Integrated GPU transform engine into SDK to accelerate transformation between depth image and color image.
-* Depth Engine plugin versioning throught binding with SDK during loading and more logging added.
+* Depth Engine plugin versioning through binding with SDK during loading and more logging added.
 
 ### v0.7.1
 

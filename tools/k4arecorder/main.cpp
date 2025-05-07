@@ -14,10 +14,13 @@
 #include <iostream>
 #include <atomic>
 #include <ctime>
+#include <chrono>
 #include <csignal>
 #include <math.h>
 
-static time_t exiting_timestamp;
+using namespace std::chrono;
+
+static steady_clock::time_point exiting_timestamp;
 
 static void signal_handler(int s)
 {
@@ -26,11 +29,11 @@ static void signal_handler(int s)
     if (!exiting)
     {
         std::cout << "Stopping recording..." << std::endl;
-        exiting_timestamp = clock();
+        exiting_timestamp = steady_clock::now();
         exiting = true;
     }
     // If Ctrl-C is received again after 1 second, force-stop the application since it's not responding.
-    else if (exiting_timestamp != 0 && clock() - exiting_timestamp > CLOCKS_PER_SEC)
+    else if (steady_clock::now() - exiting_timestamp > seconds(1))
     {
         std::cout << "Forcing stop." << std::endl;
         exit(1);
@@ -119,7 +122,8 @@ int main(int argc, char **argv)
     k4a_wired_sync_mode_t wired_sync_mode = K4A_WIRED_SYNC_MODE_STANDALONE;
     int32_t depth_delay_off_color_usec = 0;
     uint32_t subordinate_delay_off_master_usec = 0;
-    int absoluteExposureValue = 0;
+    int absoluteExposureValue = defaultExposureAuto;
+    int gain = defaultGainAuto;
     char *recording_filename;
 
     CmdParser::OptionParser cmd_parser;
@@ -323,16 +327,35 @@ int main(int argc, char **argv)
                                   subordinate_delay_off_master_usec = (uint32_t)delay;
                               });
     cmd_parser.RegisterOption("-e|--exposure-control",
-                              "Set manual exposure value (-11 to 1) for the RGB camera (default: auto exposure)",
+                              "Set manual exposure value from 2 us to 200,000us for the RGB camera (default: \n"
+                              "auto exposure). This control also supports MFC settings of -11 to 1).",
                               1,
                               [&](const std::vector<char *> &args) {
                                   int exposureValue = std::stoi(args[0]);
-                                  if (exposureValue < -11 || exposureValue > 1)
+                                  if (exposureValue >= -11 && exposureValue <= 1)
                                   {
-                                      throw std::runtime_error("Exposure value range is -11 to 1.");
+                                      absoluteExposureValue = static_cast<int32_t>(exp2f((float)exposureValue) *
+                                                                                   1000000.0f);
                                   }
-                                  absoluteExposureValue = static_cast<int32_t>(exp2f((float)exposureValue) *
-                                                                               1000000.0f);
+                                  else if (exposureValue >= 2 && exposureValue <= 200000)
+                                  {
+                                      absoluteExposureValue = exposureValue;
+                                  }
+                                  else
+                                  {
+                                      throw std::runtime_error("Exposure value range is 2 to 5s, or -11 to 1.");
+                                  }
+                              });
+    cmd_parser.RegisterOption("-g|--gain",
+                              "Set cameras manual gain. The valid range is 0 to 255. (default: auto)",
+                              1,
+                              [&](const std::vector<char *> &args) {
+                                  int gainSetting = std::stoi(args[0]);
+                                  if (gainSetting < 0 || gainSetting > 255)
+                                  {
+                                      throw std::runtime_error("Gain value must be between 0 and 255.");
+                                  }
+                                  gain = gainSetting;
                               });
 
     int args_left = 0;
@@ -409,5 +432,6 @@ int main(int argc, char **argv)
                         recording_length,
                         &device_config,
                         recording_imu_enabled,
-                        absoluteExposureValue);
+                        absoluteExposureValue,
+                        gain);
 }

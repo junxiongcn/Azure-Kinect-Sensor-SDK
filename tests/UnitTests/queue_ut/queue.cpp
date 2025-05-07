@@ -15,7 +15,7 @@
 
 int main(int argc, char **argv)
 {
-    return k4a_test_commmon_main(argc, argv);
+    return k4a_test_common_main(argc, argv);
 }
 
 #define GTEST_LOG_ERROR std::cout << "[    ERROR ] "
@@ -122,7 +122,7 @@ static k4a_result_t fill_queue(queue_t queue, uint32_t starting_value, uint32_t 
         memcpy(image_get_buffer(image), &payload, sizeof(payload));
         // Set attributes
         image_set_size(image, size);
-        image_set_timestamp_usec(image, time);
+        image_set_device_timestamp_usec(image, time);
 
         queue_push(queue, capture);
 
@@ -205,7 +205,7 @@ static uint32_t find_queue_depth(queue_t queue)
     EXPECT_NE(integer, (uint32_t)0);
     EXPECT_LT(integer, (uint32_t)MAX_QUEUE_DEPTH_LENGTH);
     EXPECT_EQ(size, capture_size);
-    EXPECT_EQ(time, image_get_timestamp_usec(image));
+    EXPECT_EQ(time, image_get_device_timestamp_usec(image));
 
     depth = MAX_QUEUE_DEPTH_LENGTH - integer;
 
@@ -812,7 +812,7 @@ TEST(queue_ut, queue_enable_disable)
     ASSERT_EQ(allocator_test_for_leaks(), 0);
 }
 
-TEST(queue_ut, queue_error)
+TEST(queue_ut, queue_stop)
 {
 
     queue_t queue;
@@ -822,9 +822,9 @@ TEST(queue_ut, queue_error)
 
     ASSERT_NE((capture = capture_manufacture(10)), (k4a_capture_t)NULL);
 
-    // error
+    // stop
     {
-        queue_error(queue);
+        queue_stop(queue);
         queue_push(queue, capture);
         queue_push(queue, capture);
         ASSERT_EQ(queue_pop(queue, 0, &capture_read), K4A_WAIT_RESULT_FAILED);
@@ -841,13 +841,13 @@ TEST(queue_ut, queue_error)
         ASSERT_EQ(queue_pop(queue, 0, &capture_read), K4A_WAIT_RESULT_TIMEOUT);
     }
 
-    // enabled, put captures in, error, veriry no captures, enable, verify still no captures
+    // enabled, put captures in, stop, veriry no captures, enable, verify still no captures
     {
         queue_enable(queue);
         queue_push(queue, capture);
         queue_push(queue, capture);
         queue_push(queue, capture);
-        queue_error(queue);
+        queue_stop(queue);
         ASSERT_EQ(queue_pop(queue, 0, &capture_read), K4A_WAIT_RESULT_FAILED);
 
         // the queue should have been purged when disabled;
@@ -857,7 +857,7 @@ TEST(queue_ut, queue_error)
 
     // disable, put captures in, enable, veriry no captures,
     {
-        queue_error(queue);
+        queue_stop(queue);
         queue_push(queue, capture);
         queue_push(queue, capture);
         queue_push(queue, capture);
@@ -865,7 +865,7 @@ TEST(queue_ut, queue_error)
         ASSERT_EQ(queue_pop(queue, 0, &capture_read), K4A_WAIT_RESULT_TIMEOUT);
 
         // the queue should have never received captures
-        queue_error(queue);
+        queue_stop(queue);
         ASSERT_EQ(queue_pop(queue, 0, &capture_read), K4A_WAIT_RESULT_FAILED);
     }
 

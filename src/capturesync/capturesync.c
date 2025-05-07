@@ -40,7 +40,8 @@ typedef struct _capturesync_context_t
     bool sync_captures;            // enables depth and color captures to be synchronized.
     bool synchronized_images_only; // Only send captures to the user if they contain both color and depth images
 
-    bool waiting_for_clean_depth_ts;
+    bool waiting_for_clean_depth_ts; // Flag to indicate the TS on depth captures has been reset.
+    int depth_captures_dropped;      // Count of dropped captures waiting for waiting_for_clean_depth_ts.
 
     bool disable_sync;      // Disables synchronizing depth and color captures. Instead releases them as they arrive.
     bool enable_ts_logging; // Write capture timestamps and type to the logger to analysis
@@ -57,8 +58,6 @@ K4A_DECLARE_CONTEXT(capturesync_t, capturesync_context_t);
 
 #define DEPTH_CAPTURE (false)
 #define COLOR_CAPTURE (true)
-
-#define MICRO_SECONDS(seconds) (seconds * 1000000)
 
 /**
  * This function is responsible for updating the information in either capturesync_context_t->depth_ir or in
@@ -115,7 +114,7 @@ drop_sample(capturesync_context_t *sync, k4a_wait_result_t *wresult, bool color_
         }
         if (*wresult == K4A_WAIT_RESULT_SUCCEEDED)
         {
-            frame_info->ts = image_get_timestamp_usec(frame_info->image);
+            frame_info->ts = image_get_device_timestamp_usec(frame_info->image);
         }
     }
 
@@ -153,7 +152,7 @@ static void replace_sample(capturesync_context_t *sync, k4a_capture_t capture_ne
     {
         frame_info->capture = capture_new;
         frame_info->image = frame_info->get_typed_image(capture_new);
-        frame_info->ts = image_get_timestamp_usec(frame_info->image);
+        frame_info->ts = image_get_device_timestamp_usec(frame_info->image);
     }
     else
     {
@@ -196,12 +195,14 @@ void capturesync_add_capture(capturesync_t capturesync_handle,
 
     if (K4A_FAILED(capture_result))
     {
-        // Notify queue of error
-        queue_error(sync->sync_queue);
-        queue_error(sync->depth_ir.queue);
-        queue_error(sync->color.queue);
-
-        LOG_WARNING("Capture Error Detected, %s", color_capture ? "Color " : "Depth ");
+        if (sync->running)
+        {
+            LOG_WARNING("Capture Error Detected, %s", color_capture ? "Color " : "Depth ");
+        }
+        // Stop queues
+        queue_stop(sync->sync_queue);
+        queue_stop(sync->depth_ir.queue);
+        queue_stop(sync->color.queue);
 
         // Reflect the low level error in the current result
         result = capture_result;
@@ -227,7 +228,7 @@ void capturesync_add_capture(capturesync_t capturesync_handle,
         result = K4A_RESULT_FROM_BOOL(image != NULL);
         if (K4A_SUCCEEDED(result))
         {
-            ts_raw_capture = image_get_timestamp_usec(image);
+            ts_raw_capture = image_get_device_timestamp_usec(image);
             image_dec_ref(image);
             image = NULL;
         }
@@ -263,13 +264,18 @@ void capturesync_add_capture(capturesync_t capturesync_handle,
             // started. This code protects against the depth timestamps from being reported before the reset happens.
             if (ts_raw_capture / sync->fps_period > 10)
             {
-                LOG_WARNING("Dropping depth capture as TS is too large TS:%10lld", ts_raw_capture);
+                sync->depth_captures_dropped++;
                 result = K4A_RESULT_FAILED; // Not an error, just a graceful exit
             }
             else
             {
                 // Once we get a good TS we are going to always get a good TS
                 sync->waiting_for_clean_depth_ts = false;
+                if (sync->depth_captures_dropped)
+                {
+                    LOG_INFO("Dropped %d depth captures waiting for time stamps to stabilize",
+                             sync->depth_captures_dropped);
+                }
             }
         }
     }
@@ -286,7 +292,7 @@ void capturesync_add_capture(capturesync_t capturesync_handle,
         {
             assert(frame_info->image == 0); // Both capture and image should be NULL
             frame_info->image = frame_info->get_typed_image(capture_raw);
-            frame_info->ts = image_get_timestamp_usec(frame_info->image);
+            frame_info->ts = image_get_device_timestamp_usec(frame_info->image);
             frame_info->capture = capture_raw;
             capture_inc_ref(capture_raw);
             capture_raw = NULL;
@@ -475,45 +481,36 @@ void capturesync_destroy(capturesync_t capturesync_handle)
     capturesync_t_destroy(capturesync_handle);
 }
 
-k4a_result_t capturesync_start(capturesync_t capturesync_handle, k4a_device_configuration_t *config)
+k4a_result_t capturesync_start(capturesync_t capturesync_handle, const k4a_device_configuration_t *config)
 {
     RETURN_VALUE_IF_HANDLE_INVALID(K4A_RESULT_FAILED, capturesync_t, capturesync_handle);
     RETURN_VALUE_IF_ARG(K4A_RESULT_FAILED, config == NULL);
     capturesync_context_t *sync = capturesync_t_get_context(capturesync_handle);
-    k4a_result_t result = K4A_RESULT_SUCCEEDED;
 
     // Reset frames to drop
     sync->waiting_for_clean_depth_ts = true;
     sync->synchronized_images_only = config->synchronized_images_only;
 
-    uint32_t camera_fps = k4a_convert_fps_to_uint(config->camera_fps);
+    sync->fps_period = HZ_TO_PERIOD_US(k4a_convert_fps_to_uint(config->camera_fps));
+    sync->fps_1_quarter_period = sync->fps_period / 4;
+    sync->depth_delay_off_color_usec = config->depth_delay_off_color_usec;
+    sync->sync_captures = true;
+    sync->depth_captures_dropped = 0;
 
-    result = K4A_RESULT_FROM_BOOL(camera_fps > 0);
-    if (K4A_SUCCEEDED(result))
+    if (config->color_resolution == K4A_COLOR_RESOLUTION_OFF || config->depth_mode == K4A_DEPTH_MODE_OFF)
     {
-        sync->fps_period = MICRO_SECONDS(1) / camera_fps;
-        sync->fps_1_quarter_period = sync->fps_period / 4;
-        sync->depth_delay_off_color_usec = config->depth_delay_off_color_usec;
-        sync->sync_captures = true;
-
-        if (config->color_resolution == K4A_COLOR_RESOLUTION_OFF || config->depth_mode == K4A_DEPTH_MODE_OFF)
-        {
-            // Only 1 sensor is running, disable synchronization
-            sync->sync_captures = false;
-        }
+        // Only 1 sensor is running, disable synchronization
+        sync->sync_captures = false;
     }
 
-    if (K4A_SUCCEEDED(result))
-    {
-        queue_enable(sync->color.queue);
-        queue_enable(sync->depth_ir.queue);
-        queue_enable(sync->sync_queue);
+    queue_enable(sync->color.queue);
+    queue_enable(sync->depth_ir.queue);
+    queue_enable(sync->sync_queue);
 
-        // Not taking the lock as we don't need to syncronize this on start
-        sync->running = true;
-    }
+    // Not taking the lock as we don't need to synchronize this on start
+    sync->running = true;
 
-    return result;
+    return K4A_RESULT_SUCCEEDED;
 }
 
 void capturesync_stop(capturesync_t capturesync_handle)

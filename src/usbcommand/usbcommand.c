@@ -106,6 +106,45 @@ static void uuid_to_string(const guid_t *guid, char *string, size_t string_size)
              guid->id[15]);
 }
 
+// scale the libusb debug verbosity to match k4a
+static k4a_result_t usb_cmd_set_libusb_debug_verbosity(usbcmd_context_t *usbcmd)
+{
+    k4a_result_t result = K4A_RESULT_SUCCEEDED;
+    libusb_context *libusb_ctx = usbcmd ? usbcmd->libusb_context : NULL;
+
+    // #if (LIBUSB_API_VERSION >= 0x01000106)
+    enum libusb_log_level level = LIBUSB_LOG_LEVEL_WARNING;
+    if (usbcmd)
+    {
+        usbcmd->libusb_verbosity = level;
+    }
+    result = K4A_RESULT_FROM_LIBUSB(libusb_set_option(libusb_ctx, LIBUSB_OPTION_LOG_LEVEL, level));
+    // #else
+    //     libusb_set_debug(libusb_ctx, 3); // set verbosity level to 3, as suggested in the documentation
+    // #endif
+    return result;
+}
+
+// Stop LIBUSB from generating any debug messages
+static void libusb_logging_disable(libusb_context *context)
+{
+    // #if (LIBUSB_API_VERSION >= 0x01000106)
+    K4A_RESULT_FROM_LIBUSB(libusb_set_option(context, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_NONE));
+    // #else
+    //     libusb_set_debug(context, 0);
+    // #endif
+}
+
+// Restore LIBUSB's ability to generate debug messages
+static void libusb_logging_restore(libusb_context *context, enum libusb_log_level verbosity)
+{
+    // #if (LIBUSB_API_VERSION >= 0x01000106)
+    K4A_RESULT_FROM_LIBUSB(libusb_set_option(context, LIBUSB_OPTION_LOG_LEVEL, verbosity));
+    // #else
+    //     libusb_set_debug(context, 3); // set verbosity level to 3, as suggested in the documentation
+    // #endif
+}
+
 static k4a_result_t populate_container_id(usbcmd_context_t *usbcmd)
 {
     struct libusb_bos_descriptor *bos_desc = NULL;
@@ -197,24 +236,24 @@ static k4a_result_t find_libusb_device(uint32_t device_index,
     libusb_device **dev_list = NULL; // pointer to pointer of device, used to retrieve a list of devices
     ssize_t count = 0;               // holding number of devices in list
     bool found = false;
+    int open_attempts = 0;
+    int access_denied = 0;
 
     // Initialize library
     result = K4A_RESULT_FROM_LIBUSB(libusb_init(&usbcmd->libusb_context));
 
     if (K4A_SUCCEEDED(result))
     {
-#if (LIBUSB_API_VERSION >= 0x01000106)
-        result = K4A_RESULT_FROM_LIBUSB(
-            libusb_set_option(usbcmd->libusb_context, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_WARNING));
-#else
-        libusb_set_debug(usbcmd->libusb_context, 3); // set verbosity level to 3, as suggested in the documentation
-#endif
+        result = usb_cmd_set_libusb_debug_verbosity(usbcmd);
     }
 
     if (K4A_SUCCEEDED(result))
     {
-        // Get list of devices attached
+        // Get list of devices attached - LIBUSB (on Windows) will generate ERROR messages when this is called
+        // immediately after a device has been detached from the USB port. So we disable debug output temperarilty.
+        libusb_logging_disable(usbcmd->libusb_context);
         result = K4A_RESULT_FROM_BOOL((count = libusb_get_device_list(usbcmd->libusb_context, &dev_list)) < INT32_MAX);
+        libusb_logging_restore(usbcmd->libusb_context, usbcmd->libusb_verbosity);
     }
 
     if (K4A_SUCCEEDED(result))
@@ -244,7 +283,20 @@ static k4a_result_t find_libusb_device(uint32_t device_index,
             usbcmd->libusb = NULL;
             if (K4A_SUCCEEDED(result))
             {
-                if (libusb_open(dev_list[loop], &usbcmd->libusb) < LIBUSB_SUCCESS)
+                open_attempts++;
+                int result_libusb;
+                {
+                    // LIBUSB (on Windows) will generate ERROR messages when open is called and the device has already
+                    // been opened, which we need to do to get the serial number.
+                    libusb_logging_disable(usbcmd->libusb_context);
+                    result_libusb = libusb_open(dev_list[loop], &usbcmd->libusb);
+                    libusb_logging_restore(usbcmd->libusb_context, usbcmd->libusb_verbosity);
+                }
+                if (LIBUSB_ERROR_ACCESS == result_libusb)
+                {
+                    access_denied++;
+                }
+                if (result_libusb < LIBUSB_SUCCESS)
                 {
                     continue; // Device is already open
                 }
@@ -266,6 +318,12 @@ static k4a_result_t find_libusb_device(uint32_t device_index,
                 {
                     // We have a container ID match
                     found = true;
+                }
+                else
+                {
+                    char container_id_string[UUID_STR_LENGTH];
+                    uuid_to_string(&usbcmd->container_id, container_id_string, sizeof(container_id_string));
+                    LOG_INFO("Found non matching Container ID: %s ", container_id_string);
                 }
             }
 
@@ -302,7 +360,15 @@ static k4a_result_t find_libusb_device(uint32_t device_index,
         }
         else
         {
-            LOG_ERROR("Unable to open LIBUSB at index %d ", device_index);
+            if (open_attempts == access_denied)
+            {
+                LOG_CRITICAL("libusb device(s) are all unavalable. Is the device being used by another application?",
+                             0);
+            }
+            else
+            {
+                LOG_ERROR("Unable to open LIBUSB at index %d ", device_index);
+            }
         }
     }
 
@@ -452,6 +518,43 @@ void usb_cmd_destroy(usbcmd_t usbcmd_handle)
 
     // Destroy the allocator
     usbcmd_t_destroy(usbcmd_handle);
+}
+
+k4a_buffer_result_t usb_cmd_get_serial_number(usbcmd_t usbcmd_handle, char *serial_number, size_t *serial_number_size)
+{
+    RETURN_VALUE_IF_HANDLE_INVALID(K4A_BUFFER_RESULT_FAILED, usbcmd_t, usbcmd_handle);
+    RETURN_VALUE_IF_ARG(K4A_BUFFER_RESULT_FAILED, serial_number_size == NULL);
+
+    k4a_buffer_result_t result_b = K4A_BUFFER_RESULT_SUCCEEDED;
+    usbcmd_context_t *usbcmd;
+
+    if (K4A_FAILED(K4A_RESULT_FROM_BOOL((usbcmd = usbcmd_t_get_context(usbcmd_handle)) != NULL)))
+    {
+        result_b = K4A_BUFFER_RESULT_FAILED;
+    }
+
+    size_t required_length = strlen((const char *)usbcmd->serial_number) + 1;
+
+    if ((result_b == K4A_BUFFER_RESULT_SUCCEEDED) && (required_length > *serial_number_size))
+    {
+        *serial_number_size = required_length;
+        result_b = K4A_BUFFER_RESULT_TOO_SMALL;
+    }
+
+    if ((result_b == K4A_BUFFER_RESULT_SUCCEEDED) && (serial_number == NULL))
+    {
+        LOG_ERROR("serial_number buffer cannot be NULL", 0);
+        result_b = K4A_BUFFER_RESULT_FAILED;
+    }
+
+    if (result_b == K4A_BUFFER_RESULT_SUCCEEDED)
+    {
+        *serial_number_size = required_length;
+        memset(serial_number, 0, *serial_number_size);
+        memcpy(serial_number, usbcmd->serial_number, required_length - 1);
+        result_b = K4A_BUFFER_RESULT_SUCCEEDED;
+    }
+    return result_b;
 }
 
 /**
@@ -608,14 +711,14 @@ static k4a_result_t usb_cmd_io(usbcmd_t usbcmd_handle,
                                             &rx_size,
                                             USB_CMD_MAX_WAIT_TIME)) == LIBUSB_SUCCESS)
             {
-                // Check for errors in response packet. The packet status is checked by the caller in the success cases,
-                // so it shouldn't be checked here.
+                // Check for errors in response packet. The packet status is checked by the caller in the
+                // success cases, so it shouldn't be checked here.
                 if ((rx_size != sizeof(response_packet)) ||
                     (response_packet.packet_transaction_id != usb_cmd_pkt.header.packet_transaction_id) ||
                     (response_packet.packet_type != USB_CMD_PACKET_TYPE_RESPONSE))
                 {
                     LOG_ERROR("Command(%08X) sequence ended in failure, "
-                              "transationId %08X == %08X "
+                              "TransactionId %08X == %08X "
                               "Response size 0x%08X == 0x%08X "
                               "Packet status 0x%08x == 0x%08x "
                               "Packet type 0x%08x == 0x%08x",
@@ -898,9 +1001,12 @@ k4a_result_t usb_cmd_get_device_count(uint32_t *p_device_count)
 {
     k4a_result_t result = K4A_RESULT_SUCCEEDED;
     struct libusb_device_descriptor desc;
+    libusb_context *libusb_ctx;
     libusb_device **dev_list; // pointer to pointer of device, used to retrieve a list of devices
     ssize_t count;            // holding number of devices in list
     int err;
+    uint32_t color_device_count = 0;
+    uint32_t depth_device_count = 0;
 
     if (p_device_count == NULL)
     {
@@ -910,25 +1016,23 @@ k4a_result_t usb_cmd_get_device_count(uint32_t *p_device_count)
 
     *p_device_count = 0;
     // initialize library
-    if ((err = libusb_init(NULL)) < 0)
+    if ((err = libusb_init(&libusb_ctx)) < 0)
     {
         LOG_ERROR("Error calling libusb_init, result:%s", libusb_error_name(err));
         return K4A_RESULT_FAILED;
     }
 
-#if (LIBUSB_API_VERSION >= 0x01000106)
-    libusb_set_option(NULL, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_WARNING);
-#else
-    libusb_set_debug(NULL, 3);                       // set verbosity level to 3, as suggested in the documentation
-#endif
+    // We disable all LIBUSB logging for this function, which only used this local context. LIBUSB (on Windows)
+    // generates errors when a device is detached moments before this is called.
+    libusb_logging_disable(libusb_ctx);
 
-    count = libusb_get_device_list(NULL, &dev_list); // get the list of devices
+    count = libusb_get_device_list(libusb_ctx, &dev_list); // get the list of devices
     if (count > INT32_MAX)
     {
         LOG_ERROR("List too large", 0);
         return K4A_RESULT_FAILED;
     }
-    if (count == 0)
+    if (count <= 0)
     {
         LOG_ERROR("No devices found", 0);
         return K4A_RESULT_FAILED;
@@ -943,17 +1047,27 @@ k4a_result_t usb_cmd_get_device_count(uint32_t *p_device_count)
             break;
         }
 
-        //  Just check for one PID assuming the other is in the package
-        if ((desc.idVendor == K4A_MSFT_VID) && (desc.idProduct == K4A_RGB_PID))
+        //  Count how many color or depth end points we find.
+        if (desc.idVendor == K4A_MSFT_VID)
         {
-            *p_device_count += 1;
+            if (desc.idProduct == K4A_RGB_PID)
+            {
+                color_device_count += 1;
+            }
+            else if (desc.idProduct == K4A_DEPTH_PID)
+            {
+                depth_device_count += 1;
+            }
         }
     }
     // free the list, unref the devices in it
     libusb_free_device_list(dev_list, (int)count);
 
     // close the instance
-    libusb_exit(NULL);
+    libusb_exit(libusb_ctx);
+
+    // Color or Depth end point my be in a bad state so we cound both and return the larger count
+    *p_device_count = color_device_count > depth_device_count ? color_device_count : depth_device_count;
 
     return result;
 }

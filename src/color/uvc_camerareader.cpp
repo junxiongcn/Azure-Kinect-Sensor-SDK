@@ -11,6 +11,8 @@
 #define UVC_AUTO_EXPOSURE_MODE_SHUTTER_PRIORITY 4  // manual exposure time, auto iris
 #define UVC_AUTO_EXPOSURE_MODE_APERTURE_PRIORITY 8 // auto exposure time, manual iris
 
+#define CONV_100USEC_TO_USEC (100)
+
 // libUVC frame callback
 static void UVCFrameCallback(uvc_frame_t *frame, void *ptr)
 {
@@ -118,6 +120,16 @@ k4a_result_t UVCCameraReader::Start(const uint32_t width,
         m_output_image_format = imageFormat;
         m_input_image_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
 
+        if (m_decoder == nullptr)
+        {
+            m_decoder = tjInitDecompress();
+            if (m_decoder == nullptr)
+            {
+                LOG_ERROR("MJPEG decoder initialization failed\n", 0);
+                return K4A_RESULT_FAILED;
+            }
+        }
+
         frameFormat = UVC_COLOR_FORMAT_MJPEG;
         break;
     default:
@@ -222,6 +234,477 @@ void UVCCameraReader::Shutdown()
     }
 }
 
+k4a_result_t UVCCameraReader::GetCameraControlCapabilities(const k4a_color_control_command_t command,
+                                                           color_control_cap_t *capabilities)
+{
+    uvc_error_t res = UVC_SUCCESS;
+    RETURN_VALUE_IF_ARG(K4A_RESULT_FAILED, capabilities == NULL);
+
+    switch (command)
+    {
+    case K4A_COLOR_CONTROL_EXPOSURE_TIME_ABSOLUTE:
+    {
+        uint8_t default_ae_mode;
+        uint32_t min_exposure_time;
+        uint32_t max_exposure_time;
+        uint32_t step_exposure_time;
+        uint32_t default_exposure_time;
+
+        res = uvc_get_ae_mode(m_pDeviceHandle, &default_ae_mode, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default auto exposure mode: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        if (default_ae_mode == UVC_AUTO_EXPOSURE_MODE_MANUAL ||
+            default_ae_mode == UVC_AUTO_EXPOSURE_MODE_SHUTTER_PRIORITY)
+        {
+            capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_MANUAL;
+        }
+        else if (default_ae_mode == UVC_AUTO_EXPOSURE_MODE_AUTO ||
+                 default_ae_mode == UVC_AUTO_EXPOSURE_MODE_APERTURE_PRIORITY)
+        {
+            capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_AUTO;
+        }
+        else
+        {
+            LOG_ERROR("Invalid auto exposure mode returned: %d", default_ae_mode);
+            return K4A_RESULT_FAILED;
+        }
+
+        // Get range of exposure time value
+        res = uvc_get_exposure_abs(m_pDeviceHandle, &min_exposure_time, UVC_GET_MIN);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get min exposure time abs: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_exposure_abs(m_pDeviceHandle, &max_exposure_time, UVC_GET_MAX);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get max exposure time abs: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_exposure_abs(m_pDeviceHandle, &step_exposure_time, UVC_GET_RES);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get exposure time abs: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_exposure_abs(m_pDeviceHandle, &default_exposure_time, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default exposure time abs: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        // 0.0001 sec to uSec
+        capabilities->supportAuto = true;
+        capabilities->stepValue = (int32_t)(step_exposure_time * CONV_100USEC_TO_USEC);
+        capabilities->minValue = MapLinuxExposureToK4a((int32_t)min_exposure_time);
+        capabilities->maxValue = MapLinuxExposureToK4a((int32_t)max_exposure_time);
+        capabilities->defaultValue = MapLinuxExposureToK4a((int32_t)default_exposure_time);
+        capabilities->valid = true;
+    }
+    break;
+    case K4A_COLOR_CONTROL_BRIGHTNESS:
+    {
+        int16_t min_brightness;
+        int16_t max_brightness;
+        int16_t step_brightness;
+        int16_t default_brightness;
+        res = uvc_get_brightness(m_pDeviceHandle, &min_brightness, UVC_GET_MIN);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get min brightness: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_brightness(m_pDeviceHandle, &max_brightness, UVC_GET_MAX);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get max brightness: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_brightness(m_pDeviceHandle, &step_brightness, UVC_GET_RES);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get step brightness: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_brightness(m_pDeviceHandle, &default_brightness, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default brightness: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        capabilities->supportAuto = false;
+        capabilities->minValue = (int32_t)min_brightness;
+        capabilities->maxValue = (int32_t)max_brightness;
+        capabilities->stepValue = (int32_t)step_brightness;
+        capabilities->defaultValue = (int32_t)default_brightness;
+        capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_MANUAL;
+        capabilities->valid = true;
+    }
+    break;
+    case K4A_COLOR_CONTROL_CONTRAST:
+    {
+        uint16_t min_contrast;
+        uint16_t max_contrast;
+        uint16_t step_contrast;
+        uint16_t default_contrast;
+
+        res = uvc_get_contrast(m_pDeviceHandle, &min_contrast, UVC_GET_MIN);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get min contrast: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_contrast(m_pDeviceHandle, &max_contrast, UVC_GET_MAX);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get max contrast: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_contrast(m_pDeviceHandle, &step_contrast, UVC_GET_RES);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get step contrast: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_contrast(m_pDeviceHandle, &default_contrast, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default contrast: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        capabilities->supportAuto = false;
+        capabilities->minValue = (int32_t)min_contrast;
+        capabilities->maxValue = (int32_t)max_contrast;
+        capabilities->stepValue = (int32_t)step_contrast;
+        capabilities->defaultValue = (int32_t)default_contrast;
+        capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_MANUAL;
+        capabilities->valid = true;
+    }
+    break;
+    case K4A_COLOR_CONTROL_SATURATION:
+    {
+        uint16_t min_saturation;
+        uint16_t max_saturation;
+        uint16_t step_saturation;
+        uint16_t default_saturation;
+
+        res = uvc_get_saturation(m_pDeviceHandle, &min_saturation, UVC_GET_MIN);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get min saturation: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_saturation(m_pDeviceHandle, &max_saturation, UVC_GET_MAX);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get max saturation: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_saturation(m_pDeviceHandle, &step_saturation, UVC_GET_RES);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get step saturation: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_saturation(m_pDeviceHandle, &default_saturation, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default saturation: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        capabilities->supportAuto = false;
+        capabilities->minValue = (int32_t)min_saturation;
+        capabilities->maxValue = (int32_t)max_saturation;
+        capabilities->stepValue = (int32_t)step_saturation;
+        capabilities->defaultValue = (int32_t)default_saturation;
+        capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_MANUAL;
+        capabilities->valid = true;
+    }
+    break;
+    case K4A_COLOR_CONTROL_SHARPNESS:
+    {
+        uint16_t min_sharpness;
+        uint16_t max_sharpness;
+        uint16_t step_sharpness;
+        uint16_t default_sharpness;
+
+        res = uvc_get_sharpness(m_pDeviceHandle, &min_sharpness, UVC_GET_MIN);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get min sharpness: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_sharpness(m_pDeviceHandle, &max_sharpness, UVC_GET_MAX);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get max sharpness: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_sharpness(m_pDeviceHandle, &step_sharpness, UVC_GET_RES);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get step sharpness: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_sharpness(m_pDeviceHandle, &default_sharpness, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default sharpness: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        capabilities->supportAuto = false;
+        capabilities->minValue = (int32_t)min_sharpness;
+        capabilities->maxValue = (int32_t)max_sharpness;
+        capabilities->stepValue = (int32_t)step_sharpness;
+        capabilities->defaultValue = (int32_t)default_sharpness;
+        capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_MANUAL;
+        capabilities->valid = true;
+    }
+    break;
+    case K4A_COLOR_CONTROL_WHITEBALANCE:
+    {
+        uint8_t default_wb_mode;
+        uint16_t min_white_balance;
+        uint16_t max_white_balance;
+        uint16_t step_white_balance;
+        uint16_t default_white_balance;
+
+        res = uvc_get_white_balance_temperature_auto(m_pDeviceHandle, &default_wb_mode, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default auto white balance temperature mode: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        if (default_wb_mode == 0)
+        {
+            capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_MANUAL;
+        }
+        else if (default_wb_mode == 1)
+        {
+            capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_AUTO;
+        }
+        else
+        {
+            LOG_ERROR("Invalid default auto white balance temperature mode returned: %d", default_wb_mode);
+            return K4A_RESULT_FAILED;
+        }
+
+        // Get range of white balance temperature value
+        res = uvc_get_white_balance_temperature(m_pDeviceHandle, &min_white_balance, UVC_GET_MIN);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get min white balance temperature: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_white_balance_temperature(m_pDeviceHandle, &max_white_balance, UVC_GET_MAX);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get max white balance temperature: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_white_balance_temperature(m_pDeviceHandle, &step_white_balance, UVC_GET_RES);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get step white balance temperature: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_white_balance_temperature(m_pDeviceHandle, &default_white_balance, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default white balance temperature: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        capabilities->supportAuto = true;
+        capabilities->minValue = min_white_balance;
+        capabilities->maxValue = max_white_balance;
+        capabilities->stepValue = step_white_balance;
+        capabilities->defaultValue = default_white_balance;
+        capabilities->valid = true;
+    }
+    break;
+    case K4A_COLOR_CONTROL_BACKLIGHT_COMPENSATION:
+    {
+        uint16_t min_backlight_compensation;
+        uint16_t max_backlight_compensation;
+        uint16_t step_backlight_compensation;
+        uint16_t default_backlight_compensation;
+
+        res = uvc_get_backlight_compensation(m_pDeviceHandle, &min_backlight_compensation, UVC_GET_MIN);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get min backlight compensation: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_backlight_compensation(m_pDeviceHandle, &max_backlight_compensation, UVC_GET_MAX);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get max backlight compensation: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_backlight_compensation(m_pDeviceHandle, &step_backlight_compensation, UVC_GET_RES);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get step backlight compensation: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_backlight_compensation(m_pDeviceHandle, &default_backlight_compensation, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default backlight compensation: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        capabilities->supportAuto = false;
+        capabilities->minValue = (int32_t)min_backlight_compensation;
+        capabilities->maxValue = (int32_t)max_backlight_compensation;
+        capabilities->stepValue = (int32_t)step_backlight_compensation;
+        capabilities->defaultValue = (int32_t)default_backlight_compensation;
+        capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_MANUAL;
+        capabilities->valid = true;
+    }
+    break;
+    case K4A_COLOR_CONTROL_GAIN:
+    {
+        uint16_t min_gain;
+        uint16_t max_gain;
+        uint16_t step_gain;
+        uint16_t default_gain;
+
+        res = uvc_get_gain(m_pDeviceHandle, &min_gain, UVC_GET_MIN);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get min gain: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_gain(m_pDeviceHandle, &max_gain, UVC_GET_MAX);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get max gain: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_gain(m_pDeviceHandle, &step_gain, UVC_GET_RES);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get step gain: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_gain(m_pDeviceHandle, &default_gain, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default gain: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        capabilities->supportAuto = false;
+        capabilities->minValue = (int32_t)min_gain;
+        capabilities->maxValue = (int32_t)max_gain;
+        capabilities->stepValue = (int32_t)step_gain;
+        capabilities->defaultValue = (int32_t)default_gain;
+        capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_MANUAL;
+        capabilities->valid = true;
+    }
+    break;
+    case K4A_COLOR_CONTROL_POWERLINE_FREQUENCY:
+    {
+        uint8_t min_powerline_freq;
+        uint8_t max_powerline_freq;
+        uint8_t step_powerline_freq;
+        uint8_t default_powerline_freq;
+
+        res = uvc_get_power_line_frequency(m_pDeviceHandle, &min_powerline_freq, UVC_GET_MIN);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get min powerline frequency: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_power_line_frequency(m_pDeviceHandle, &max_powerline_freq, UVC_GET_MAX);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get max powerline frequency: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_power_line_frequency(m_pDeviceHandle, &step_powerline_freq, UVC_GET_RES);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get step powerline frequency: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        res = uvc_get_power_line_frequency(m_pDeviceHandle, &default_powerline_freq, UVC_GET_DEF);
+        if (res < 0)
+        {
+            LOG_ERROR("Failed to get default powerline frequency: %s", uvc_strerror(res));
+            return K4A_RESULT_FAILED;
+        }
+
+        capabilities->supportAuto = false;
+        capabilities->minValue = (int32_t)min_powerline_freq;
+        capabilities->maxValue = (int32_t)max_powerline_freq;
+        capabilities->stepValue = (int32_t)step_powerline_freq;
+        capabilities->defaultValue = (int32_t)default_powerline_freq;
+        capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_MANUAL;
+        capabilities->valid = true;
+    }
+    break;
+    case K4A_COLOR_CONTROL_AUTO_EXPOSURE_PRIORITY:
+    {
+        // Deprecated control. Return 0 for all capabilities which is current behaviour.
+        capabilities->supportAuto = false;
+        capabilities->minValue = 0;
+        capabilities->maxValue = 0;
+        capabilities->stepValue = 0;
+        capabilities->defaultValue = 0;
+        capabilities->defaultMode = K4A_COLOR_CONTROL_MODE_MANUAL;
+        capabilities->valid = true;
+        LOG_WARNING("K4A_COLOR_CONTROL_AUTO_EXPOSURE_PRIORITY is deprecated and does nothing.", 0);
+    }
+    break;
+    default:
+        LOG_ERROR("Unsupported control: %d\n", command);
+        return K4A_RESULT_FAILED;
+    }
+
+    return K4A_RESULT_SUCCEEDED;
+}
+
 k4a_result_t UVCCameraReader::GetCameraControl(const k4a_color_control_command_t command,
                                                k4a_color_control_mode_t *mode,
                                                int32_t *pValue)
@@ -272,7 +755,7 @@ k4a_result_t UVCCameraReader::GetCameraControl(const k4a_color_control_command_t
             return K4A_RESULT_FAILED;
         }
 
-        *pValue = (int32_t)(exposure_time * 100); // 0.0001 sec to uSec
+        *pValue = MapLinuxExposureToK4a((int32_t)exposure_time);
     }
     break;
     case K4A_COLOR_CONTROL_BRIGHTNESS:
@@ -399,7 +882,7 @@ k4a_result_t UVCCameraReader::GetCameraControl(const k4a_color_control_command_t
     case K4A_COLOR_CONTROL_AUTO_EXPOSURE_PRIORITY:
     {
         *pValue = 0;
-        LOG_WARNING("K4A_COLOR_CONTROL_AUTO_EXPOSURE_PRIORITY is deprecated and do nothing.", 0);
+        LOG_WARNING("K4A_COLOR_CONTROL_AUTO_EXPOSURE_PRIORITY is deprecated and does nothing.", 0);
     }
     break;
     default:
@@ -426,8 +909,6 @@ k4a_result_t UVCCameraReader::SetCameraControl(const k4a_color_control_command_t
     case K4A_COLOR_CONTROL_EXPOSURE_TIME_ABSOLUTE:
         if (mode == K4A_COLOR_CONTROL_MODE_MANUAL)
         {
-            uint32_t exposure_time = (uint32_t)(newValue / 100); // uSec to 0.0001 sec
-
             res = uvc_set_ae_mode(m_pDeviceHandle, UVC_AUTO_EXPOSURE_MODE_MANUAL);
             if (res < 0)
             {
@@ -435,7 +916,7 @@ k4a_result_t UVCCameraReader::SetCameraControl(const k4a_color_control_command_t
                 return K4A_RESULT_FAILED;
             }
 
-            res = uvc_set_exposure_abs(m_pDeviceHandle, exposure_time);
+            res = uvc_set_exposure_abs(m_pDeviceHandle, (uint32_t)MapK4aExposureToLinux(newValue));
             if (res < 0)
             {
                 LOG_ERROR("Failed to set exposure time abs: %s", uvc_strerror(res));
@@ -588,11 +1069,24 @@ k4a_result_t UVCCameraReader::SetCameraControl(const k4a_color_control_command_t
     case K4A_COLOR_CONTROL_POWERLINE_FREQUENCY:
         if (mode == K4A_COLOR_CONTROL_MODE_MANUAL)
         {
+            if (newValue == 0)
+            {
+                // Even firmware does not able to disable power line frequncy control,
+                // value zero is accepted.
+                // Return failed unsupported value.
+                LOG_ERROR("Can not disable Powerline Frequency Control", 0);
+                return K4A_RESULT_FAILED;
+            }
+
             res = uvc_set_power_line_frequency(m_pDeviceHandle, (uint8_t)newValue);
             if (res < 0)
             {
                 LOG_ERROR("Failed to set powerline frequency: %s", uvc_strerror(res));
                 return K4A_RESULT_FAILED;
+            }
+            else
+            {
+                m_using_60hz_power = (newValue == 2);
             }
         }
         else
@@ -603,7 +1097,7 @@ k4a_result_t UVCCameraReader::SetCameraControl(const k4a_color_control_command_t
         break;
     case K4A_COLOR_CONTROL_AUTO_EXPOSURE_PRIORITY:
     {
-        LOG_WARNING("K4A_COLOR_CONTROL_AUTO_EXPOSURE_PRIORITY is deprecated and do nothing.", 0);
+        LOG_WARNING("K4A_COLOR_CONTROL_AUTO_EXPOSURE_PRIORITY is deprecated and does nothing.", 0);
     }
     break;
     default:
@@ -612,6 +1106,13 @@ k4a_result_t UVCCameraReader::SetCameraControl(const k4a_color_control_command_t
     }
 
     return K4A_RESULT_SUCCEEDED;
+}
+
+// Callback function for when image objects are destroyed
+static void uvc_camerareader_free_allocation(void *buffer, void *context)
+{
+    (void)context;
+    allocator_free(buffer);
 }
 
 void UVCCameraReader::Callback(uvc_frame_t *frame)
@@ -630,6 +1131,7 @@ void UVCCameraReader::Callback(uvc_frame_t *frame)
         uint32_t iso_speed = 0;
         uint32_t white_balance = 0;
         bool decodeMJPEG = false;
+        bool drop_image = false;
 
         // Parse metadata
         size_t bufferLeft = (size_t)frame->metadata_bytes;
@@ -704,7 +1206,7 @@ void UVCCameraReader::Callback(uvc_frame_t *frame)
         }
 
         // Allocate K4A Color buffer
-        buffer = allocator_alloc(ALLOCATION_SOURCE_COLOR, buffer_size, &context);
+        buffer = allocator_alloc(ALLOCATION_SOURCE_COLOR, buffer_size);
         k4a_result_t result = K4A_RESULT_FROM_BOOL(buffer != NULL);
 
         if (K4A_SUCCEEDED(result))
@@ -713,6 +1215,10 @@ void UVCCameraReader::Callback(uvc_frame_t *frame)
             {
                 // Decode MJPG into BRGA32
                 result = DecodeMJPEGtoBGRA32((uint8_t *)frame->data, frame->data_bytes, buffer, buffer_size);
+                if (K4A_FAILED(result))
+                {
+                    drop_image = true;
+                }
             }
             else
             {
@@ -723,20 +1229,22 @@ void UVCCameraReader::Callback(uvc_frame_t *frame)
 
         if (K4A_SUCCEEDED(result))
         {
+            // The buffer size may be larger than the height * stride for some formats
+            // so we must use image_create_from_buffer rather than image_create
             result = TRACE_CALL(image_create_from_buffer(m_output_image_format,
                                                          (int)m_width_pixels,
                                                          (int)m_height_pixels,
                                                          stride,
                                                          buffer,
                                                          buffer_size,
-                                                         allocator_free,
+                                                         uvc_camerareader_free_allocation,
                                                          context,
                                                          &image));
         }
         else
         {
             // cleanup if there was an error
-            allocator_free(buffer, context);
+            allocator_free(buffer);
         }
 
         k4a_capture_t capture = NULL;
@@ -748,8 +1256,11 @@ void UVCCameraReader::Callback(uvc_frame_t *frame)
         if (K4A_SUCCEEDED(result))
         {
             // Set metadata
-            image_set_timestamp_usec(image, K4A_90K_HZ_TICK_TO_USEC(framePTS));
-            image_set_exposure_time_usec(image, exposure_time);
+            uint64_t ts = (uint64_t)frame->capture_time_finished.tv_sec * 1000000000;
+            ts += (uint64_t)frame->capture_time_finished.tv_nsec;
+            image_set_system_timestamp_nsec(image, ts);
+            image_set_device_timestamp_usec(image, K4A_90K_HZ_TICK_TO_USEC(framePTS));
+            image_set_exposure_usec(image, exposure_time);
             image_set_iso_speed(image, iso_speed);
             image_set_white_balance(image, white_balance);
 
@@ -757,8 +1268,11 @@ void UVCCameraReader::Callback(uvc_frame_t *frame)
             capture_set_color_image(capture, image);
         }
 
-        // Calback to color
-        m_pCallback(result, capture, m_pCallbackContext);
+        if (!drop_image)
+        {
+            // Calback to color
+            m_pCallback(result, capture, m_pCallbackContext);
+        }
 
         if (image)
         {
@@ -779,16 +1293,6 @@ UVCCameraReader::DecodeMJPEGtoBGRA32(uint8_t *in_buf, const size_t in_size, uint
 {
     RETURN_VALUE_IF_ARG(K4A_RESULT_FAILED, m_width_pixels * m_height_pixels * 4 > out_size);
 
-    if (m_decoder == nullptr)
-    {
-        m_decoder = tjInitDecompress();
-        if (m_decoder == nullptr)
-        {
-            LOG_ERROR("MJPEG decoder initialization failed\n", 0);
-            return K4A_RESULT_FAILED;
-        }
-    }
-
     int decompressStatus = tjDecompress2(m_decoder,
                                          in_buf,
                                          (unsigned long)in_size,
@@ -801,9 +1305,56 @@ UVCCameraReader::DecodeMJPEGtoBGRA32(uint8_t *in_buf, const size_t in_size, uint
 
     if (decompressStatus != 0)
     {
-        LOG_ERROR("MJPEG decode failed: %d", decompressStatus);
+        // This can happen when the host PC is not reading data off the camera fast enough. We also have the option to
+        // move the use of libjpeg-turbo to a more recent version and use tjGetErrorCode() to get a better understanding
+        // of the status returned.
+        LOG_WARNING("MJPEG decode failed, dropping image: %d", decompressStatus);
         return K4A_RESULT_FAILED;
     }
 
     return K4A_RESULT_SUCCEEDED;
+}
+
+// Returns exposure in 100us time base
+int32_t UVCCameraReader::MapK4aExposureToLinux(int32_t K4aExposure_usec)
+{
+    // We map to the expected exposure then convert to 100us time base to ensure we roll over to the next exposure
+    // setting in the same way Windows does.
+    for (uint32_t x = 0; x < COUNTOF(device_exposure_mapping); x++)
+    {
+        int32_t mapped_exposure = device_exposure_mapping[x].exposure_mapped_50Hz_usec;
+        if (m_using_60hz_power)
+        {
+            mapped_exposure = device_exposure_mapping[x].exposure_mapped_60Hz_usec;
+        }
+
+        if (K4aExposure_usec <= mapped_exposure)
+        {
+            return mapped_exposure / CONV_100USEC_TO_USEC;
+        }
+    }
+
+    // Default to longest capture in the event mapping failed.
+    return MAX_EXPOSURE(m_using_60hz_power) / CONV_100USEC_TO_USEC;
+}
+
+int32_t UVCCameraReader::MapLinuxExposureToK4a(int32_t LinuxExposure)
+{
+    LinuxExposure *= CONV_100USEC_TO_USEC; // Convert Linux 100us units to us.
+    for (uint32_t x = 0; x < COUNTOF(device_exposure_mapping); x++)
+    {
+        int32_t mapped_exposure = device_exposure_mapping[x].exposure_mapped_50Hz_usec;
+        if (m_using_60hz_power)
+        {
+            mapped_exposure = device_exposure_mapping[x].exposure_mapped_60Hz_usec;
+        }
+
+        if (LinuxExposure <= mapped_exposure)
+        {
+            return mapped_exposure;
+        }
+    }
+
+    // Default to longest capture in the event mapping failed.
+    return MAX_EXPOSURE(m_using_60hz_power);
 }

@@ -20,9 +20,20 @@
 extern "C" {
 #endif
 
+/**
+ * \defgroup Functions Functions
+ * \ingroup csdk
+ *
+ * Public functions of the API
+ *
+ * @{
+ */
+
 /** Gets the number of connected devices
  *
  * \returns Number of sensors connected to the PC.
+ *
+ * \relates k4a_device_t
  *
  * \remarks
  * This API counts the number of Azure Kinect devices connected to the host PC.
@@ -37,10 +48,10 @@ extern "C" {
  */
 K4A_EXPORT uint32_t k4a_device_get_installed_count(void);
 
-/** Sets and clears the callback function to recieve debug messages from the Azure Kinect device.
+/** Sets and clears the callback function to receive debug messages from the Azure Kinect device.
  *
  * \param message_cb
- * The callback function to recieve messages from. Set to NULL to unregister the callback function.
+ * The callback function to receive messages from. Set to NULL to unregister the callback function.
  *
  * \param message_cb_context
  * The callback functions context.
@@ -85,6 +96,42 @@ K4A_EXPORT k4a_result_t k4a_set_debug_message_handler(k4a_logging_message_cb_t *
                                                       void *message_cb_context,
                                                       k4a_log_level_t min_level);
 
+/** Sets the callback functions for the SDK allocator
+ *
+ * \param allocate
+ * The callback function to allocate memory. When the SDK requires memory allocation this callback will be
+ * called and the application can provide a buffer and a context.
+ *
+ * \param free
+ * The callback function to free memory. The SDK will call this function when memory allocated by \p allocate
+ * is no longer needed.
+ *
+ * \return ::K4A_RESULT_SUCCEEDED if the callback function was set or cleared successfully. ::K4A_RESULT_FAILED if an
+ * error is encountered or the callback function has already been set.
+ *
+ * \remarks
+ * Call this function to hook memory allocation by the SDK. Calling with both \p allocate and \p free as NULL will
+ * clear the hook and reset to the default allocator.
+ *
+ * \remarks
+ * If this function is called after memory has been allocated, the previous version of \p free function may still be
+ * called in the future. The SDK will always call the \p free function that was set at the time that the memory
+ * was allocated.
+ *
+ * \remarks
+ * Not all memory allocation by the SDK is performed by this allocate function. Small allocations or allocations
+ * from special pools may come from other sources.
+ *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4a.h (include k4a/k4a.h)</requirement>
+ *   <requirement name="Library">k4a.lib</requirement>
+ *   <requirement name="DLL">k4a.dll</requirement>
+ * </requirements>
+ * \endxmlonly
+ */
+K4A_EXPORT k4a_result_t k4a_set_allocator(k4a_memory_allocate_cb_t allocate, k4a_memory_destroy_cb_t free);
+
 /** Open an Azure Kinect device.
  *
  * \param index
@@ -92,6 +139,8 @@ K4A_EXPORT k4a_result_t k4a_set_debug_message_handler(k4a_logging_message_cb_t *
  *
  * \param device_handle
  * Output parameter which on success will return a handle to the device.
+ *
+ * \relates k4a_device_t
  *
  * \return ::K4A_RESULT_SUCCEEDED if the device was opened successfully.
  *
@@ -546,6 +595,7 @@ K4A_EXPORT float k4a_capture_get_temperature_c(k4a_capture_t capture_handle);
  *
  * \param stride_bytes
  * The number of bytes per horizontal line of the image.
+ * If set to 0, the stride will be set to the minimum size given the \p format and \p width_pixels.
  *
  * \param image_handle
  * Pointer to store image handle in.
@@ -555,7 +605,9 @@ K4A_EXPORT float k4a_capture_get_temperature_c(k4a_capture_t capture_handle);
  * compressed formats that may not be represented by the same number of bytes per line.
  *
  * \remarks
- * The function will allocate an image buffer of size \p height_pixels * \p stride_bytes.
+ * For most image formats, the function will allocate an image buffer of size \p height_pixels * \p stride_bytes.
+ * Buffers #K4A_IMAGE_FORMAT_COLOR_NV12 format will allocate an additional \p height_pixels / 2 set of lines (each of \p
+ * stride_bytes). This function cannot be used to allocate #K4A_IMAGE_FORMAT_COLOR_MJPG buffers.
  *
  * \remarks
  * To create an image object without the API allocating memory, or to represent an image that has a non-deterministic
@@ -789,19 +841,22 @@ K4A_EXPORT int k4a_image_get_height_pixels(k4a_image_t image_handle);
  */
 K4A_EXPORT int k4a_image_get_stride_bytes(k4a_image_t image_handle);
 
-/** Get the image timestamp in microseconds
+/** Get the image's device timestamp in microseconds.
  *
  * \param image_handle
  * Handle of the image for which the get operation is performed on.
  *
  * \remarks
- * Returns the timestamp of the image. Timestamps are recorded by the device and represent the mid-point of exposure.
- * They may be used for relative comparison, but their absolute value has no defined meaning.
+ * Returns the device timestamp of the image. Timestamps are recorded by the device and represent the mid-point of
+ * exposure. They may be used for relative comparison, but their absolute value has no defined meaning.
  *
  * \returns
  * If the \p image_handle is invalid or if no timestamp was set for the image,
  * this function will return 0. It is also possible for 0 to be a valid timestamp originating from the beginning
  * of a recording or the start of streaming.
+ *
+ * \deprecated
+ * Deprecated starting in 1.2.0. Please use k4a_image_get_device_timestamp_usec().
  *
  * \relates k4a_image_t
  *
@@ -813,7 +868,68 @@ K4A_EXPORT int k4a_image_get_stride_bytes(k4a_image_t image_handle);
  * </requirements>
  * \endxmlonly
  */
-K4A_EXPORT uint64_t k4a_image_get_timestamp_usec(k4a_image_t image_handle);
+K4A_DEPRECATED_EXPORT uint64_t k4a_image_get_timestamp_usec(k4a_image_t image_handle);
+
+/** Get the image's device timestamp in microseconds.
+ *
+ * \param image_handle
+ * Handle of the image for which the get operation is performed on.
+ *
+ * \remarks
+ * Returns the device timestamp of the image, as captured by the hardware. Timestamps are recorded by the device and
+ * represent the mid-point of exposure. They may be used for relative comparison, but their absolute value has no
+ * defined meaning.
+ *
+ * \returns
+ * If the \p image_handle is invalid or if no timestamp was set for the image, this function will return 0. It is also
+ * possible for 0 to be a valid timestamp originating from the beginning of a recording or the start of streaming.
+ *
+ * \relates k4a_image_t
+ *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4a.h (include k4a/k4a.h)</requirement>
+ *   <requirement name="Library">k4a.lib</requirement>
+ *   <requirement name="DLL">k4a.dll</requirement>
+ * </requirements>
+ * \endxmlonly
+ */
+K4A_EXPORT uint64_t k4a_image_get_device_timestamp_usec(k4a_image_t image_handle);
+
+/** Get the image's system timestamp in nanoseconds.
+ *
+ * \param image_handle
+ * Handle of the image for which the get operation is performed on.
+ *
+ * \remarks
+ * Returns the system timestamp of the image. Timestamps are recorded by the host. They may be used for relative
+ * comparision, as they are relative to the corresponding system clock. The absolute value is a monotonic count from
+ * an arbitrary point in the past.
+ *
+ * \remarks
+ * The system timestamp is captured at the moment host PC finishes receiving the image.
+ *
+ * \remarks
+ * On Linux the system timestamp is read from clock_gettime(CLOCK_MONOTONIC), which measures realtime and is not
+ * impacted by adjustments to the system clock. It starts from an arbitrary point in the past. On Windows the system
+ * timestamp is read from QueryPerformanceCounter(), it also measures realtime and is not impacted by adjustments to the
+ * system clock. It also starts from an arbitrary point in the past.
+ *
+ * \returns
+ * If the \p image_handle is invalid or if no timestamp was set for the image, this function will return 0. It is also
+ * possible for 0 to be a valid timestamp originating from the beginning of a recording or the start of streaming.
+ *
+ * \relates k4a_image_t
+ *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4a.h (include k4a/k4a.h)</requirement>
+ *   <requirement name="Library">k4a.lib</requirement>
+ *   <requirement name="DLL">k4a.dll</requirement>
+ * </requirements>
+ * \endxmlonly
+ */
+K4A_EXPORT uint64_t k4a_image_get_system_timestamp_nsec(k4a_image_t image_handle);
 
 /** Get the image exposure in microseconds.
  *
@@ -886,20 +1002,20 @@ K4A_EXPORT uint32_t k4a_image_get_white_balance(k4a_image_t image_handle);
  */
 K4A_EXPORT uint32_t k4a_image_get_iso_speed(k4a_image_t image_handle);
 
-/** Set the time stamp, in microseconds, of the image.
+/** Set the device time stamp, in microseconds, of the image.
  *
  * \param image_handle
  * Handle of the image to set the timestamp on.
  *
  * \param timestamp_usec
- * Timestamp of the image in microseconds.
+ * Device timestamp of the image in microseconds.
  *
  * \remarks
  * Use this function in conjunction with k4a_image_create() or k4a_image_create_from_buffer() to construct a
  * \ref k4a_image_t.
  *
  * \remarks
- * Set a timestamp of 0 to indicate that the timestamp is not valid.
+ * The device timestamp represents the mid-point of exposure of the image, as captured by the hardware.
  *
  * \relates k4a_image_t
  *
@@ -911,7 +1027,65 @@ K4A_EXPORT uint32_t k4a_image_get_iso_speed(k4a_image_t image_handle);
  * </requirements>
  * \endxmlonly
  */
-K4A_EXPORT void k4a_image_set_timestamp_usec(k4a_image_t image_handle, uint64_t timestamp_usec);
+K4A_EXPORT void k4a_image_set_device_timestamp_usec(k4a_image_t image_handle, uint64_t timestamp_usec);
+
+/** Set the device time stamp, in microseconds, of the image.
+ *
+ * \param image_handle
+ * Handle of the image to set the timestamp on.
+ *
+ * \param timestamp_usec
+ * Device timestamp of the image in microseconds.
+ *
+ * \remarks
+ * Use this function in conjunction with k4a_image_create() or k4a_image_create_from_buffer() to construct a
+ * \ref k4a_image_t.
+ *
+ * \remarks
+ * The device timestamp represents the mid-point of exposure of the image, as captured by the hardware.
+ *
+ * \relates k4a_image_t
+ *
+ * \deprecated
+ * Deprecated starting in 1.2.0. Please use k4a_image_set_device_timestamp_usec().
+ *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4a.h (include k4a/k4a.h)</requirement>
+ *   <requirement name="Library">k4a.lib</requirement>
+ *   <requirement name="DLL">k4a.dll</requirement>
+ * </requirements>
+ * \endxmlonly
+ */
+K4A_DEPRECATED_EXPORT void k4a_image_set_timestamp_usec(k4a_image_t image_handle, uint64_t timestamp_usec);
+
+/** Set the system time stamp, in nanoseconds, of the image.
+ *
+ * \param image_handle
+ * Handle of the image to set the timestamp on.
+ *
+ * \param timestamp_nsec
+ * Timestamp of the image in nanoseconds.
+ *
+ * \remarks
+ * Use this function in conjunction with k4a_image_create() or k4a_image_create_from_buffer() to construct a
+ * \ref k4a_image_t.
+ *
+ * \remarks
+ * The system timestamp is a high performance and increasing clock (from boot). The timestamp represents the time
+ * immediately after the image buffer was read by the host PC.
+ *
+ * \relates k4a_image_t
+ *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4a.h (include k4a/k4a.h)</requirement>
+ *   <requirement name="Library">k4a.lib</requirement>
+ *   <requirement name="DLL">k4a.dll</requirement>
+ * </requirements>
+ * \endxmlonly
+ */
+K4A_EXPORT void k4a_image_set_system_timestamp_nsec(k4a_image_t image_handle, uint64_t timestamp_nsec);
 
 /** Set the exposure time, in microseconds, of the image.
  *
@@ -936,7 +1110,35 @@ K4A_EXPORT void k4a_image_set_timestamp_usec(k4a_image_t image_handle, uint64_t 
  * </requirements>
  * \endxmlonly
  */
-K4A_EXPORT void k4a_image_set_exposure_time_usec(k4a_image_t image_handle, uint64_t exposure_usec);
+K4A_EXPORT void k4a_image_set_exposure_usec(k4a_image_t image_handle, uint64_t exposure_usec);
+
+/** Set the exposure time, in microseconds, of the image.
+ *
+ * \param image_handle
+ * Handle of the image to set the exposure time on.
+ *
+ * \param exposure_usec
+ * Exposure time of the image in microseconds.
+ *
+ * \remarks
+ * Use this function in conjunction with k4a_image_create() or k4a_image_create_from_buffer() to construct a
+ * \ref k4a_image_t. An exposure time of 0 is considered invalid. Only color image formats are expected to have a valid
+ * exposure time.
+ *
+ * \deprecated
+ * Deprecated starting in 1.2.0. Please use k4a_image_set_exposure_usec().
+ *
+ * \relates k4a_image_t
+ *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4a.h (include k4a/k4a.h)</requirement>
+ *   <requirement name="Library">k4a.lib</requirement>
+ *   <requirement name="DLL">k4a.dll</requirement>
+ * </requirements>
+ * \endxmlonly
+ */
+K4A_DEPRECATED_EXPORT void k4a_image_set_exposure_time_usec(k4a_image_t image_handle, uint64_t exposure_usec);
 
 /** Set the white balance of the image.
  *
@@ -1057,7 +1259,7 @@ K4A_EXPORT void k4a_image_release(k4a_image_t image_handle);
  * </requirements>
  * \endxmlonly
  */
-K4A_EXPORT k4a_result_t k4a_device_start_cameras(k4a_device_t device_handle, k4a_device_configuration_t *config);
+K4A_EXPORT k4a_result_t k4a_device_start_cameras(k4a_device_t device_handle, const k4a_device_configuration_t *config);
 
 /** Stops the color and depth camera capture.
  *
@@ -1203,7 +1405,57 @@ K4A_EXPORT k4a_buffer_result_t k4a_device_get_serialnum(k4a_device_t device_hand
  */
 K4A_EXPORT k4a_result_t k4a_device_get_version(k4a_device_t device_handle, k4a_hardware_version_t *version);
 
-/** Get the Azure Kinect color sensor control value.
+/** Get the Azure Kinect color sensor control capabilities.
+ *
+ * \param device_handle
+ * Handle obtained by k4a_device_open().
+ *
+ * \param command
+ * Color sensor control command.
+ *
+ * \param supports_auto
+ * Location to store whether the color sensor's control support auto mode or not.
+ * true if it supports auto mode, otherwise false.
+ *
+ * \param min_value
+ * Location to store the color sensor's control minimum value of /p command.
+ *
+ * \param max_value
+ * Location to store the color sensor's control maximum value of /p command.
+ *
+ * \param step_value
+ * Location to store the color sensor's control step value of /p command.
+ *
+ * \param default_value
+ * Location to store the color sensor's control default value of /p command.
+ *
+ * \param default_mode
+ * Location to store the color sensor's control default mode of /p command.
+ *
+ * \returns
+ * ::K4A_RESULT_SUCCEEDED if the value was successfully returned, ::K4A_RESULT_FAILED if an error occurred
+ *
+ * \relates k4a_device_t
+ *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4a.h (include k4a/k4a.h)</requirement>
+ *   <requirement name="Library">k4a.lib</requirement>
+ *   <requirement name="DLL">k4a.dll</requirement>
+ * </requirements>
+ * \endxmlonly
+ */
+K4A_EXPORT k4a_result_t k4a_device_get_color_control_capabilities(k4a_device_t device_handle,
+                                                                  k4a_color_control_command_t command,
+                                                                  bool *supports_auto,
+                                                                  int32_t *min_value,
+                                                                  int32_t *max_value,
+                                                                  int32_t *step_value,
+                                                                  int32_t *default_value,
+                                                                  k4a_color_control_mode_t *default_mode);
+
+/** Get the Azure Kinect color sensor control
+ * value.
  *
  * \param device_handle
  * Handle obtained by k4a_device_open().
@@ -1212,27 +1464,27 @@ K4A_EXPORT k4a_result_t k4a_device_get_version(k4a_device_t device_handle, k4a_h
  * Color sensor control command.
  *
  * \param mode
- * Location to store the color sensor's control mode. This mode represents whether the command is in automatic or manual
- * mode.
+ * Location to store the color sensor's control mode. This mode represents whether the command is in automatic or
+ * manual mode.
  *
  * \param value
- * Location to store the color sensor's control value. This value is always written, but is only valid when the \p mode
- * returned is ::K4A_COLOR_CONTROL_MODE_MANUAL for the current \p command.
+ * Location to store the color sensor's control value. This value is always written, but is only valid when the \p
+ * mode returned is ::K4A_COLOR_CONTROL_MODE_MANUAL for the current \p command.
  *
  * \returns
  * ::K4A_RESULT_SUCCEEDED if the value was successfully returned, ::K4A_RESULT_FAILED if an error occurred
  *
  * \remarks
- * Each control command may be set to manual or automatic. See the definition of \ref k4a_color_control_command_t on how
- * to interpret the \p value for each command.
+ * Each control command may be set to manual or automatic. See the definition of \ref k4a_color_control_command_t on
+ * how to interpret the \p value for each command.
  *
  * \remarks
- * Some control commands are only supported in manual mode. When a command is in automatic mode, the \p value for that
- * command is not valid.
+ * Some control commands are only supported in manual mode. When a command is in automatic mode, the \p value for
+ * that command is not valid.
  *
  * \remarks
- * Control values set on a device are reset only when the device is power cycled. The device will retain the settings
- * even if the \ref k4a_device_t is closed or the application is restarted.
+ * Control values set on a device are reset only when the device is power cycled. The device will retain the
+ * settings even if the \ref k4a_device_t is closed or the application is restarted.
  *
  * \relates k4a_device_t
  *
@@ -1509,7 +1761,8 @@ K4A_EXPORT k4a_result_t k4a_calibration_3d_to_3d(const k4a_calibration_t *calibr
  * The 2D pixel in \p source_camera coordinates.
  *
  * \param source_depth_mm
- * The depth of \p source_point2d in millimeters.
+ * The depth of \p source_point2d in millimeters. One way to derive the depth value in the color camera geometry is to
+ * use the function k4a_transformation_depth_image_to_color_camera().
  *
  * \param source_camera
  * The current camera.
@@ -1626,7 +1879,8 @@ K4A_EXPORT k4a_result_t k4a_calibration_3d_to_2d(const k4a_calibration_t *calibr
  * The 2D pixel in \p source_camera coordinates.
  *
  * \param source_depth_mm
- * The depth of \p source_point2d in millimeters.
+ * The depth of \p source_point2d in millimeters. One way to derive the depth value in the color camera geometry is to
+ * use the function k4a_transformation_depth_image_to_color_camera().
  *
  * \param source_camera
  * The current camera.
@@ -1678,6 +1932,59 @@ K4A_EXPORT k4a_result_t k4a_calibration_2d_to_2d(const k4a_calibration_t *calibr
                                                  const k4a_calibration_type_t target_camera,
                                                  k4a_float2_t *target_point2d,
                                                  int *valid);
+
+/** Transform a 2D pixel coordinate from color camera into a 2D pixel coordinate of
+ * the depth camera.
+ *
+ * \param calibration
+ * Location to read the camera calibration obtained by k4a_device_get_calibration().
+ *
+ * \param source_point2d
+ * The 2D pixel in \p color camera coordinates.
+ *
+ * \param depth_image
+ * Handle to input depth image.
+ *
+ * \param target_point2d
+ * The 2D pixel in \p depth camera coordinates.
+ *
+ * \param valid
+ * The output parameter returns a value of 1 if the \p source_point2d is a valid coordinate in the \p target_camera
+ * coordinate system, and will return 0 if the coordinate is not valid in the calibration model.
+ *
+ * \returns
+ * ::K4A_RESULT_SUCCEEDED if \p target_point2d was successfully written. ::K4A_RESULT_FAILED if \p calibration
+ * contained invalid transformation parameters. If the function returns ::K4A_RESULT_SUCCEEDED, but \p valid is 0,
+ * the transformation was computed, but the results in \p target_point2d are outside of the range of valid calibration
+ * and should be ignored.
+ *
+ * \remarks
+ * This function represents an alternative to k4a_calibration_2d_to_2d() if the number of pixels that need to be
+ * transformed is small. This function searches along an epipolar line in the depth image to find the corresponding
+ * depth pixel. If a larger number of pixels need to be transformed, it might be computationally cheaper to call
+ * k4a_transformation_depth_image_to_color_camera() to get correspondence depth values for these color pixels, then call
+ * the function k4a_calibration_2d_to_2d().
+ *
+ * \remarks
+ * If \p source_point2d does not map to a valid 2D coordinate in the \p target_camera coordinate system, \p valid is set
+ * to 0. If it is valid, \p valid will be set to 1. The user should not use the value of \p target_point2d if \p valid
+ * was set to 0.
+ *
+ * \relates k4a_calibration_t
+ *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4a.h (include k4a/k4a.h)</requirement>
+ *   <requirement name="Library">k4a.lib</requirement>
+ *   <requirement name="DLL">k4a.dll</requirement>
+ * </requirements>
+ * \endxmlonly
+ */
+K4A_EXPORT k4a_result_t k4a_calibration_color_2d_to_depth_2d(const k4a_calibration_t *calibration,
+                                                             const k4a_float2_t *source_point2d,
+                                                             const k4a_image_t depth_image,
+                                                             k4a_float2_t *target_point2d,
+                                                             int *valid);
 
 /** Get handle to transformation handle.
  *
@@ -1770,6 +2077,91 @@ K4A_EXPORT k4a_result_t k4a_transformation_depth_image_to_color_camera(k4a_trans
                                                                        const k4a_image_t depth_image,
                                                                        k4a_image_t transformed_depth_image);
 
+/** Transforms depth map and a custom image into the geometry of the color camera.
+ *
+ * \param transformation_handle
+ * Transformation handle.
+ *
+ * \param depth_image
+ * Handle to input depth image.
+ *
+ * \param custom_image
+ * Handle to input custom image.
+ *
+ * \param transformed_depth_image
+ * Handle to output transformed depth image.
+ *
+ * \param transformed_custom_image
+ * Handle to output transformed custom image.
+ *
+ * \param interpolation_type
+ * Parameter that controls how pixels in \p custom_image should be interpolated when transformed to color camera space.
+ * K4A_TRANSFORMATION_INTERPOLATION_TYPE_LINEAR if linear interpolation should be used.
+ * K4A_TRANSFORMATION_INTERPOLATION_TYPE_NEAREST if nearest neighbor interpolation should be used.
+ *
+ * \param invalid_custom_value
+ * Defines the custom image pixel value that should be written to \p transformed_custom_image in case the corresponding
+ * depth pixel can not be transformed into the color camera space.
+ *
+ * \remarks
+ * This produces a depth image and a corresponding custom image for which each pixel matches the corresponding
+ * pixel coordinates of the color camera.
+ *
+ * \remarks
+ * \p depth_image and \p transformed_depth_image must be of format ::K4A_IMAGE_FORMAT_DEPTH16.
+ *
+ * \remarks
+ * \p custom_image and \p transformed_custom_image must be of format ::K4A_IMAGE_FORMAT_CUSTOM8 or
+ * ::K4A_IMAGE_FORMAT_CUSTOM16.
+ *
+ * \remarks
+ * \p transformed_depth_image and \p transformed_custom_image must have a width and height matching the width and
+ * height of the color camera in the mode specified by the \ref k4a_calibration_t used to create the
+ * \p transformation_handle with k4a_transformation_create().
+ *
+ * \remarks
+ * \p custom_image must have a width and height matching the width and height of \p depth_image.
+ *
+ * \remarks
+ * The contents \p transformed_depth_image will be filled with the depth values derived from \p depth_image in the color
+ * camera's coordinate space.
+ *
+ * \remarks
+ * The contents \p transformed_custom_image will be filled with the values derived from \p custom_image in the color
+ * camera's coordinate space.
+ *
+ * \remarks
+ * \p transformed_depth_image and \p transformed_custom_image should be created by the caller using k4a_image_create()
+ * or k4a_image_create_from_buffer().
+ *
+ * \remarks
+ * Using ::K4A_TRANSFORMATION_INTERPOLATION_TYPE_LINEAR for \p interpolation_type could create new values to \p
+ * transformed_custom_image which do no exist in \p custom_image. Using ::K4A_TRANSFORMATION_INTERPOLATION_TYPE_NEAREST
+ * will prevent this from happenning but will result in a less smooth image.
+ *
+ * \returns
+ * ::K4A_RESULT_SUCCEEDED if \p transformed_depth_image and \p transformed_custom_image were successfully written and
+ * ::K4A_RESULT_FAILED otherwise.
+ *
+ * \relates k4a_transformation_t
+ *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4a.h (include k4a/k4a.h)</requirement>
+ *   <requirement name="Library">k4a.lib</requirement>
+ *   <requirement name="DLL">k4a.dll</requirement>
+ * </requirements>
+ * \endxmlonly
+ */
+K4A_EXPORT k4a_result_t
+k4a_transformation_depth_image_to_color_camera_custom(k4a_transformation_t transformation_handle,
+                                                      const k4a_image_t depth_image,
+                                                      const k4a_image_t custom_image,
+                                                      k4a_image_t transformed_depth_image,
+                                                      k4a_image_t transformed_custom_image,
+                                                      k4a_transformation_interpolation_type_t interpolation_type,
+                                                      uint32_t invalid_custom_value);
+
 /** Transforms a color image into the geometry of the depth camera.
  *
  * \param transformation_handle
@@ -1822,7 +2214,8 @@ K4A_EXPORT k4a_result_t k4a_transformation_color_image_to_depth_camera(k4a_trans
                                                                        const k4a_image_t color_image,
                                                                        k4a_image_t transformed_color_image);
 
-/** Transforms the depth image into 3 planar images representing X, Y and Z-coordinates of corresponding 3D points.
+/** Transforms the depth image into a single image with voxels representing
+ * X, Y and Z-coordinates in millimeters of corresponding 3D points.
  *
  * \param transformation_handle
  * Transformation handle.
@@ -1873,6 +2266,10 @@ K4A_EXPORT k4a_result_t k4a_transformation_depth_image_to_point_cloud(k4a_transf
                                                                       const k4a_image_t depth_image,
                                                                       const k4a_calibration_type_t camera,
                                                                       k4a_image_t xyz_image);
+
+/**
+ * @}
+ */
 
 #ifdef __cplusplus
 }

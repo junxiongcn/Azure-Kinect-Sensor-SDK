@@ -23,13 +23,16 @@ extern "C" {
 #endif
 
 /**
- * Current Version of the k4A Depth Engine Plugin API
+ * Current Version of the Azure Kinect Depth Engine Plugin Interface
  *
- * \remarks The MAJOR version must be updated to denote any breaking change
- * that would cause an older SDK to not be able to use this plugin.
+ * \remarks
+ * When the depth engine plugin interface (k4a_plugin_t) is updated, this version should be increased.
+ *
+ * \remarks
+ * The depth version binary name has the plugin version appended to it to signify the compatibility between the plugin
+ * and the depth engine.
  */
-#define K4A_PLUGIN_MAJOR_VERSION 1 /**< Azure Kinect plugin major version */
-#define K4A_PLUGIN_MINOR_VERSION 0 /**< Azure Kinect plugin minor version */
+#define K4A_PLUGIN_VERSION 2 /**< Azure Kinect plugin version */
 
 /**
  * Expected name of plugin's dynamic library
@@ -51,19 +54,31 @@ extern "C" {
 
 /** Supported Depth Engine modes
  *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef enum
 {
     K4A_DEPTH_ENGINE_MODE_UNKNOWN = -1,           /**< Unknown Depth Engine mode */
-    K4A_DEPTH_ENGINE_MODE_LT_SW_BINNING = 2,      /**< Translates to ::K4A_DEPTH_MODE_NFOV_2X2BINNED */
-    K4A_DEPTH_ENGINE_MODE_PCM = 3,                /**< Translates to ::K4A_DEPTH_MODE_PASSIVE_IR */
-    K4A_DEPTH_ENGINE_MODE_LT_NATIVE = 4,          /**< Translates to ::K4A_DEPTH_MODE_NFOV_UNBINNED */
-    K4A_DEPTH_ENGINE_MODE_MEGA_PIXEL = 5,         /**< Translates to ::K4A_DEPTH_MODE_WFOV_UNBINNED */
-    K4A_DEPTH_ENGINE_MODE_QUARTER_MEGA_PIXEL = 7, /**< Translates to ::K4A_DEPTH_MODE_WFOV_2X2BINNED */
+    K4A_DEPTH_ENGINE_MODE_ST = 0,                 /**< Internal use only */
+    K4A_DEPTH_ENGINE_MODE_LT_HW_BINNING = 1,      /**< Internal use only */
+    K4A_DEPTH_ENGINE_MODE_LT_SW_BINNING = 2,      /**< Translates to K4A_DEPTH_MODE_NFOV_2X2BINNED */
+    K4A_DEPTH_ENGINE_MODE_PCM = 3,                /**< Translates to K4A_DEPTH_MODE_PASSIVE_IR */
+    K4A_DEPTH_ENGINE_MODE_LT_NATIVE = 4,          /**< Translates to K4A_DEPTH_MODE_NFOV_UNBINNED */
+    K4A_DEPTH_ENGINE_MODE_MEGA_PIXEL = 5,         /**< Translates to K4A_DEPTH_MODE_WFOV_UNBINNED */
+    K4A_DEPTH_ENGINE_MODE_QUARTER_MEGA_PIXEL = 7, /**< Translates to K4A_DEPTH_MODE_WFOV_2X2BINNED */
 } k4a_depth_engine_mode_t;
 
 /** Depth Engine output types
  *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef enum
 {
@@ -74,26 +89,58 @@ typedef enum
 
 /** Depth Engine supported input formats
  *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef enum
 {
     K4A_DEPTH_ENGINE_INPUT_TYPE_UNKNOWN = 0,          /**< Unknown Depth Engine input type */
+    K4A_DEPTH_ENGINE_INPUT_TYPE_16BIT_LINEAR = 1,     /**< Internal use only */
+    K4A_DEPTH_ENGINE_INPUT_TYPE_12BIT_RAW = 2,        /**< Internal use only */
     K4A_DEPTH_ENGINE_INPUT_TYPE_12BIT_COMPRESSED = 3, /**< 12bit compressed */
     K4A_DEPTH_ENGINE_INPUT_TYPE_8BIT_COMPRESSED = 4,  /**< 8bit compressed */
 } k4a_depth_engine_input_type_t;
 
 /** Transform Engine types
  *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef enum
 {
-    K4A_TRANSFORM_ENGINE_TYPE_COLOR_TO_DEPTH = 0, /**< Transforms the color image into the geometry of the depth camera
-                                                   */
-    K4A_TRANSFORM_ENGINE_TYPE_DEPTH_TO_COLOR /**< Transforms the depth image into the geometry of the color camera */
+    K4A_TRANSFORM_ENGINE_TYPE_COLOR_TO_DEPTH = 0,      /**< Transforms color image into the geometry of depth camera */
+    K4A_TRANSFORM_ENGINE_TYPE_DEPTH_TO_COLOR,          /**< Transforms depth image into the geometry of color camera */
+    K4A_TRANSFORM_ENGINE_TYPE_DEPTH_CUSTOM8_TO_COLOR,  /**< Transforms depth + 8 bit custom data into color camera */
+    K4A_TRANSFORM_ENGINE_TYPE_DEPTH_CUSTOM16_TO_COLOR, /**< Transforms depth + 16 bit custom data into color camera */
 } k4a_transform_engine_type_t;
+
+/** Transform Engine interpolation type
+ *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
+ */
+typedef enum
+{
+    K4A_TRANSFORM_ENGINE_INTERPOLATION_NEAREST = 0, /**< Nearest neighbor interpolation */
+    K4A_TRANSFORM_ENGINE_INTERPOLATION_LINEAR       /**< Linear interpolation */
+} k4a_transform_engine_interpolation_t;
 
 /** Depth Engine output frame information
  *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef struct _k4a_depth_engine_output_frame_info_t
 {
@@ -110,6 +157,11 @@ typedef struct _k4a_depth_engine_output_frame_info_t
  * /remarks At Runtime, please set to null, we parse these information from a
  * raw compressed input. Some internal testing may use this to pass in temperature info.
  *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef struct _k4a_depth_engine_input_frame_info_t
 {
@@ -121,6 +173,11 @@ typedef struct _k4a_depth_engine_input_frame_info_t
 
 /** Depth Engine return codes
  *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef enum
 {
@@ -130,6 +187,8 @@ typedef enum
     K4A_DEPTH_ENGINE_RESULT_DATA_ERROR_INVALID_INPUT_BUFFER_SIZE = 1,  /**< Invalid input buffer size */
     K4A_DEPTH_ENGINE_RESULT_DATA_ERROR_INVALID_OUTPUT_BUFFER_SIZE = 2, /**< Invalid output buffer size */
     K4A_DEPTH_ENGINE_RESULT_DATA_ERROR_INVALID_CAPTURE_SEQUENCE = 3,   /**< Invalid input capture data */
+    K4A_DEPTH_ENGINE_RESULT_DATA_ERROR_NULL_INPUT_BUFFER = 4,          /**< Invalid input buffer pointer */
+    K4A_DEPTH_ENGINE_RESULT_DATA_ERROR_NULL_OUTPUT_BUFFER = 5,         /**< Invalid output buffer pointer */
 
     // System fatal error, require caller to restart depth engine
     K4A_DEPTH_ENGINE_RESULT_FATAL_ERROR_NULL_ENGINE_POINTER = 101,       /**< Depth Engine was not initialized */
@@ -147,6 +206,8 @@ typedef enum
     K4A_DEPTH_ENGINE_RESULT_FATAL_ERROR_GPU_FROM_API = 204,            /**< GPU API returns failure */
     K4A_DEPTH_ENGINE_RESULT_FATAL_ERROR_GPU_INTERNAL = 205,            /**< GPU processing internal error */
     K4A_DEPTH_ENGINE_RESULT_FATAL_ERROR_GPU_SHADER_COMPILATION = 206,  /**< GPU shader compilation error */
+    K4A_DEPTH_ENGINE_RESULT_FATAL_ERROR_GPU_OPENGL_CONTEXT = 207,      /**< OpenGL context creation error */
+    K4A_DEPTH_ENGINE_RESULT_FATAL_ERROR_GPU_TIMEOUT = 208,             /**< GPU processing timed out */
 
     // Frame dropped during asynchronous call, only be sent to async caller with event listener
     K4A_DEPTH_ENGINE_RESULT_FRAME_DROPPED_ASYNC = 301, /**< Frame dropped during asynchronous call */
@@ -154,9 +215,14 @@ typedef enum
 
 /** Depth Engine plugin version
  *
- * /remarks On load, k4a will validate that major versions match between the SDK
+ * /remarks On load, Azure Kinect will validate that major versions match between the SDK
  * and the plugin.
  *
+ * \xmlonly
+ * <requirements>k4a_depth
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef struct
 {
@@ -167,11 +233,21 @@ typedef struct
 
 /** Depth Engine context handle to be implemented by plugin
  *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef struct k4a_depth_engine_context_t k4a_depth_engine_context_t;
 
 /** Transform Engine context handle to be implemented by plugin
  *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef struct k4a_transform_engine_context_t k4a_transform_engine_context_t;
 
@@ -185,10 +261,16 @@ typedef struct k4a_transform_engine_context_t k4a_transform_engine_context_t;
  *
  * \param output_frame
  * The final processed buffer passed back out to the user
+ *
+ * \param output_frame2
+ * Second output buffer passed back out to the user or null
  */
-typedef void(__stdcall k4a_processing_complete_cb_t)(void *context, int status, void *output_frame);
+typedef void(__stdcall k4a_processing_complete_cb_t)(void *context,
+                                                     int status,
+                                                     void *output_frame,
+                                                     void *output_frame2);
 
-/** Function for creating and initialzing the depth engine.
+/** Function for creating and initializing the depth engine.
  *
  * \param context
  * An opaque pointer to be passed around to the rest of the depth engine calls.
@@ -215,7 +297,7 @@ typedef void(__stdcall k4a_processing_complete_cb_t)(void *context, int status, 
  * An optional context to be passed back to the callback
  *
  * \returns
- * ::K4A_DEPTH_ENGINE_RESULT_SUCCEEDED on success, or the proper failure code on
+ * K4A_DEPTH_ENGINE_RESULT_SUCCEEDED on success, or the proper failure code on
  * failure
  */
 typedef k4a_depth_engine_result_code_t(__stdcall *k4a_de_create_and_initialize_fn_t)(
@@ -224,7 +306,7 @@ typedef k4a_depth_engine_result_code_t(__stdcall *k4a_de_create_and_initialize_f
     void *cal_block,
     k4a_depth_engine_mode_t mode,
     k4a_depth_engine_input_type_t input_format,
-    void *camera_calibration,
+    void *camera_calibration, // Fallback to use ccb intrinsics if it is null
     k4a_processing_complete_cb_t *callback,
     void *callback_context);
 
@@ -255,7 +337,7 @@ typedef k4a_depth_engine_result_code_t(__stdcall *k4a_de_create_and_initialize_f
  * The input frame information (internal use only), should pass in null at runtime
  *
  * \returns
- * ::K4A_DEPTH_ENGINE_RESULT_SUCCEEDED on success, or the proper failure code on
+ * K4A_DEPTH_ENGINE_RESULT_SUCCEEDED on success, or the proper failure code on
  * failure
  */
 typedef k4a_depth_engine_result_code_t(__stdcall *k4a_de_process_frame_fn_t)(
@@ -285,7 +367,7 @@ typedef size_t(__stdcall *k4a_de_get_output_frame_size_fn_t)(k4a_depth_engine_co
  */
 typedef void(__stdcall *k4a_de_destroy_fn_t)(k4a_depth_engine_context_t **context);
 
-/** Function for creating and initialzing the transform engine.
+/** Function for creating and initializing the transform engine.
  *
  * \param context
  * An opaque pointer to be passed around to the rest of the transform engine calls
@@ -300,7 +382,7 @@ typedef void(__stdcall *k4a_de_destroy_fn_t)(k4a_depth_engine_context_t **contex
  * An optional context to be passed back to the callback
  *
  * \returns
- * ::K4A_DEPTH_ENGINE_RESULT_SUCCEEDED on success, or the proper failure code on
+ * K4A_DEPTH_ENGINE_RESULT_SUCCEEDED on success, or the proper failure code on
  * failure
  */
 typedef k4a_depth_engine_result_code_t(__stdcall *k4a_te_create_and_initialize_fn_t)(
@@ -317,17 +399,23 @@ typedef k4a_depth_engine_result_code_t(__stdcall *k4a_te_create_and_initialize_f
  * \param type
  * The type of transform engine
  *
+ * \param interpolation
+ * The interpolation type for aux frame data
+ *
+ * \param invalid_value
+ * The desired value for invalid pixel data
+ *
  * \param depth_frame
  * Frame buffer containing depth frame data
  *
  * \param depth_frame_size
  * Size of the depth_frame buffer in bytes
  *
- * \param color_frame
- * Frame buffer containing color frame data
+ * \param frame2
+ * Frame buffer containing color or aux frame data
  *
- * \param color_frame_size
- * Size of the color_frame buffer in bytes
+ * \param frame2_size
+ * Size of the frame2 buffer in bytes
  *
  * \param output_frame
  * The buffer of the output frame
@@ -335,18 +423,29 @@ typedef k4a_depth_engine_result_code_t(__stdcall *k4a_te_create_and_initialize_f
  * \param output_frame_size
  * Size of the output_frame buffer in bytes
  *
+ * \param output_frame2
+ * Second output buffer or null if there is none
+ *
+ * \param output_frame2_size
+ * Size of the output_frame2 buffer in bytes
+ *
  * \returns
- * ::K4A_DEPTH_ENGINE_RESULT_SUCCEEDED on success, or the proper failure code on
+ * K4A_DEPTH_ENGINE_RESULT_SUCCEEDED on success, or the proper failure code on
  * failure
  */
-typedef k4a_depth_engine_result_code_t(__stdcall *k4a_te_process_frame_fn_t)(k4a_transform_engine_context_t *context,
-                                                                             k4a_transform_engine_type_t type,
-                                                                             const void *depth_frame,
-                                                                             size_t depth_frame_size,
-                                                                             const void *color_frame,
-                                                                             size_t color_frame_size,
-                                                                             void *output_frame,
-                                                                             size_t output_frame_size);
+typedef k4a_depth_engine_result_code_t(__stdcall *k4a_te_process_frame_fn_t)(
+    k4a_transform_engine_context_t *context,
+    k4a_transform_engine_type_t type,
+    k4a_transform_engine_interpolation_t interpolation,
+    uint32_t invalid_value,
+    const void *depth_frame,
+    size_t depth_frame_size,
+    const void *frame2,
+    size_t frame2_size,
+    void *output_frame,
+    size_t output_frame_size,
+    void *output_frame2,
+    size_t output_frame2_size);
 
 /** Get the size of the output frame in bytes.
  *
@@ -376,10 +475,15 @@ typedef void(__stdcall *k4a_te_destroy_fn_t)(k4a_transform_engine_context_t **co
  * k4a_plugin_t. The plugin must properly fill out all fields of the plugin for
  * the Azure Kinect SDK to accept the plugin.
  *
+ * \xmlonly
+ * <requirements>
+ *   <requirement name="Header">k4aplugin.h (include k4a/k4aplugin.h)</requirement>
+ * </requirements>
+ * \endxmlonly
  */
 typedef struct _k4a_plugin_t
 {
-    k4a_plugin_version_t version; /**< Version this plugin was written against */
+    k4a_plugin_version_t version;                                         /**< Depth Engine Version */
     k4a_de_create_and_initialize_fn_t depth_engine_create_and_initialize; /**< Function pointer to a
                                                                              depth_engine_create_and_initialize function
                                                                            */

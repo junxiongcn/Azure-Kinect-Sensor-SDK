@@ -22,9 +22,10 @@ typedef struct _k4a_camera_calibration_mode_info_t
 
 typedef struct _k4a_transformation_image_descriptor_t
 {
-    int width_pixels;  // image width in pixels
-    int height_pixels; // image height in pixels
-    int stride_bytes;  // image stride in bytes
+    int width_pixels;          // image width in pixels
+    int height_pixels;         // image height in pixels
+    int stride_bytes;          // image stride in bytes
+    k4a_image_format_t format; // image format
 } k4a_transformation_image_descriptor_t;
 
 typedef struct _k4a_transformation_xy_tables_t
@@ -34,6 +35,16 @@ typedef struct _k4a_transformation_xy_tables_t
     int width;      // width of x and y tables
     int height;     // height of x and y tables
 } k4a_transformation_xy_tables_t;
+
+typedef struct _k4a_transformation_pinhole_t
+{
+    float px;
+    float py;
+    float fx;
+    float fy;
+    int width;
+    int height;
+} k4a_transformation_pinhole_t;
 
 typedef struct _k4a_transform_engine_calibration_t
 {
@@ -81,6 +92,12 @@ k4a_result_t transformation_2d_to_2d(const k4a_calibration_t *calibration,
                                      float target_point2d[2],
                                      int *valid);
 
+k4a_result_t transformation_color_2d_to_depth_2d(const k4a_calibration_t *calibration,
+                                                 const float source_point2d[2],
+                                                 const k4a_image_t depth_image,
+                                                 float target_point2d[2],
+                                                 int *valid);
+
 k4a_transformation_t transformation_create(const k4a_calibration_t *calibration, bool gpu_optimization);
 
 void transformation_destroy(k4a_transformation_t transformation_handle);
@@ -90,23 +107,39 @@ k4a_buffer_result_t transformation_depth_image_to_color_camera_validate_paramete
     const k4a_transformation_xy_tables_t *xy_tables_depth_camera,
     const uint8_t *depth_image_data,
     const k4a_transformation_image_descriptor_t *depth_image_descriptor,
+    const uint8_t *custom_image_data,
+    const k4a_transformation_image_descriptor_t *custom_image_descriptor,
     uint8_t *transformed_depth_image_data,
-    k4a_transformation_image_descriptor_t *transformed_depth_image_descriptor);
+    k4a_transformation_image_descriptor_t *transformed_depth_image_descriptor,
+    uint8_t *transformed_custom_image_data,
+    k4a_transformation_image_descriptor_t *transformed_custom_image_descriptor);
 
 k4a_buffer_result_t transformation_depth_image_to_color_camera_internal(
     const k4a_calibration_t *calibration,
     const k4a_transformation_xy_tables_t *xy_tables_depth_camera,
     const uint8_t *depth_image_data,
     const k4a_transformation_image_descriptor_t *depth_image_descriptor,
+    const uint8_t *custom_image_data,
+    const k4a_transformation_image_descriptor_t *custom_image_descriptor,
     uint8_t *transformed_depth_image_data,
-    k4a_transformation_image_descriptor_t *transformed_depth_image_descriptor);
+    k4a_transformation_image_descriptor_t *transformed_depth_image_descriptor,
+    uint8_t *transformed_custom_image_data,
+    k4a_transformation_image_descriptor_t *transformed_custom_image_descriptor,
+    k4a_transformation_interpolation_type_t interpolation_type,
+    uint32_t invalid_custom_value);
 
-k4a_result_t
-transformation_depth_image_to_color_camera(k4a_transformation_t transformation_handle,
-                                           const uint8_t *depth_image_data,
-                                           const k4a_transformation_image_descriptor_t *depth_image_descriptor,
-                                           uint8_t *transformed_depth_image_data,
-                                           k4a_transformation_image_descriptor_t *transformed_depth_image_descriptor);
+k4a_result_t transformation_depth_image_to_color_camera_custom(
+    k4a_transformation_t transformation_handle,
+    const uint8_t *depth_image_data,
+    const k4a_transformation_image_descriptor_t *depth_image_descriptor,
+    const uint8_t *custom_image_data,
+    const k4a_transformation_image_descriptor_t *custom_image_descriptor,
+    uint8_t *transformed_depth_image_data,
+    k4a_transformation_image_descriptor_t *transformed_depth_image_descriptor,
+    uint8_t *transformed_custom_image_data,
+    k4a_transformation_image_descriptor_t *transformed_custom_image_descriptor,
+    k4a_transformation_interpolation_type_t interpolation_type,
+    uint32_t invalid_custom_value);
 
 k4a_buffer_result_t transformation_color_image_to_depth_camera_validate_parameters(
     const k4a_calibration_t *calibration,

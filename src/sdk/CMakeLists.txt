@@ -7,8 +7,6 @@ add_library(k4a SHARED
             dll_main.c
             ${CMAKE_CURRENT_BINARY_DIR}/version.rc)
 
-
-
 # Generate k4a_export.h
 # This is a platform specific header defining the macros for the export functions
 # of the shared library. This header is referenced by k4a.h and needs to be installed
@@ -62,9 +60,15 @@ add_library(k4a::k4a ALIAS k4a)
 set_target_properties(
     k4a
     PROPERTIES
-        VERSION ${K4A_VERSION}
-        SOVERSION ${K4A_VERSION})
+        VERSION
+            "${K4A_VERSION_MAJOR}.${K4A_VERSION_MINOR}.${K4A_VERSION_PATCH}"
+        SOVERSION
+            "${K4A_VERSION_MAJOR}.${K4A_VERSION_MINOR}")
 
+set(NAMELINK_IF_AVAILABLE)
+if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.12.0")
+    set(NAMELINK_IF_AVAILABLE NAMELINK_COMPONENT development)
+endif()
 
 # Setup install
 include(GNUInstallDirs)
@@ -73,12 +77,22 @@ install(
         k4a
     EXPORT
         k4aTargets
-    LIBRARY DESTINATION
-        ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION
-        ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION
-        ${CMAKE_INSTALL_BINDIR}
+    LIBRARY
+        DESTINATION
+            ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT
+            runtime
+        ${NAMELINK_IF_AVAILABLE}
+    ARCHIVE
+        DESTINATION
+            ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT
+            development
+    RUNTIME
+        DESTINATION
+            ${CMAKE_INSTALL_BINDIR}
+        COMPONENT
+            runtime
 )
 
 include(CMakePackageConfigHelpers)
@@ -97,6 +111,8 @@ install(
         k4a::
     DESTINATION
         ${CMAKE_INSTALL_LIBDIR}/cmake/k4a
+    COMPONENT
+        development
 )
 
 configure_file("${PROJECT_SOURCE_DIR}/cmake/k4aConfig.cmake.in" "${CMAKE_CURRENT_BINARY_DIR}/k4aConfig.cmake" COPYONLY)
@@ -107,16 +123,21 @@ install(
         "${CMAKE_CURRENT_BINARY_DIR}/k4aConfigVersion.cmake"
     DESTINATION
         ${CMAKE_INSTALL_LIBDIR}/cmake/k4a
+    COMPONENT
+        development
 )
 
 install(
     FILES
         ${K4A_INCLUDE_DIR}/k4a/k4a.h
+        ${K4A_INCLUDE_DIR}/k4a/k4a.hpp
         ${K4A_INCLUDE_DIR}/k4a/k4atypes.h
         ${CMAKE_CURRENT_BINARY_DIR}/include/k4a/k4aversion.h
         ${CMAKE_CURRENT_BINARY_DIR}/include/k4a/k4a_export.h
     DESTINATION
         ${CMAKE_INSTALL_INCLUDEDIR}/k4a
+    COMPONENT
+        development
 )
 
 if ("${CMAKE_SYSTEM_NAME}" STREQUAL "Windows")
@@ -125,6 +146,8 @@ if ("${CMAKE_SYSTEM_NAME}" STREQUAL "Windows")
             $<TARGET_PDB_FILE:k4a>
         DESTINATION
             ${CMAKE_INSTALL_BINDIR}
+        COMPONENT
+            runtime
         OPTIONAL
     )
 endif()
